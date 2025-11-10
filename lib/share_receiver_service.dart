@@ -295,7 +295,7 @@ class _ShareDialogState extends State<ShareDialog> {
         children: [
           Row(
             children: [
-              const Icon(Icons.link, color: Color(0xFFF08787)),
+              const Icon(Icons.link, color: Color(0xFF6E8EF5)),
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
@@ -349,7 +349,7 @@ class _ShareDialogState extends State<ShareDialog> {
                 itemBuilder: (context, index) {
                   final folder = _folders[index];
                   return ListTile(
-                    leading: const Icon(Icons.folder, color: Color(0xFFF08787)),
+                    leading: const Icon(Icons.folder, color: Color(0xFF6E8EF5)),
                     title: Text(folder['name']),
                     onTap: () => _saveLinkToFolder(folder['id']),
                   );

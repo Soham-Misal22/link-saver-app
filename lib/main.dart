@@ -42,16 +42,35 @@ class MyApp extends StatelessWidget {
         theme: ThemeData(
           useMaterial3: true,
           colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFFF08787),
-            // ⚙️ CORRECTED THE TYPO HERE
+            seedColor: const Color(0xFF6E8EF5),
             brightness: Brightness.light,
           ),
-          textTheme: GoogleFonts.interTextTheme(Theme.of(context).textTheme),
+          textTheme: GoogleFonts.interTextTheme(Theme.of(context).textTheme).copyWith(
+            headlineSmall: GoogleFonts.inter(fontWeight: FontWeight.w700),
+            titleMedium: GoogleFonts.inter(fontWeight: FontWeight.w600),
+            bodyMedium: GoogleFonts.inter(height: 1.3),
+          ),
           scaffoldBackgroundColor: Colors.transparent,
           appBarTheme: const AppBarTheme(
             backgroundColor: Colors.transparent,
             elevation: 0,
             foregroundColor: Color(0xFF1F1F1F),
+          ),
+          cardTheme: CardThemeData(
+            color: Colors.white,
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          dialogTheme: DialogThemeData(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+          elevatedButtonTheme: ElevatedButtonThemeData(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF6E8EF5),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
           ),
         ),
         home: const AuthGate(),
@@ -1490,7 +1509,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('My Saved Folders'),
+        title: const Text('My Saved Folders', style: TextStyle(fontWeight: FontWeight.w700)),
         actions: [
           IconButton(
             tooltip: 'Sign out',
@@ -1559,7 +1578,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     crossAxisCount: 2,
                     mainAxisSpacing: 12,
                     crossAxisSpacing: 12,
-                    childAspectRatio: 1.1,
+                        childAspectRatio: 1.0,
                   ),
                   itemCount: filtered.length,
                   itemBuilder: (context, index) {
@@ -1605,7 +1624,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onPressed: _showAddFolderDialog,
             label: const Text('Add Folder'),
             icon: const Icon(Icons.add),
-            backgroundColor: const Color(0xFFF08787),
+            backgroundColor: const Color(0xFF6E8EF5),
             foregroundColor: Colors.white,
           ),
         ],
@@ -1631,12 +1650,11 @@ class _FolderCard extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(16),
           color: Colors.white,
-          border:
-          Border.all(color: const Color(0xFFF08787).withOpacity(0.35)),
+          border: Border.all(color: const Color(0xFF6E8EF5).withOpacity(0.25)),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.06),
-              blurRadius: 10,
+              blurRadius: 12,
               offset: const Offset(0, 6),
             ),
           ],
@@ -1650,17 +1668,20 @@ class _FolderCard extends StatelessWidget {
                 children: [
                   Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF08787).withOpacity(0.2),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF6E8EF5), Color(0xFF4FC3F7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     padding: const EdgeInsets.all(10),
-                    child: const Icon(Icons.folder_open,
-                        color: Color(0xFFF08787)),
+                    child: const Icon(Icons.folder_open, color: Colors.white),
                   ),
                   const Spacer(),
                   IconButton(
                     icon:
-                    const Icon(Icons.delete_outline, color: Colors.black45),
+                    const Icon(Icons.delete_outline, color: Colors.black38),
                     onPressed: onDelete,
                     tooltip: 'Delete',
                   ),
@@ -1674,7 +1695,7 @@ class _FolderCard extends StatelessWidget {
                 style: const TextStyle(
                   color: Color(0xFF1F1F1F),
                   fontSize: 18,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
               const Spacer(),
@@ -1831,7 +1852,17 @@ class _FolderViewPageState extends State<FolderViewPage> {
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
-        title: Text(widget.folderName),
+        title: Text(widget.folderName, style: const TextStyle(fontWeight: FontWeight.w700)),
+        elevation: 0,
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFF6E8EF5), Color(0xFF4FC3F7)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+        ),
       ),
       body: Container(
         decoration: const BoxDecoration(
@@ -1868,8 +1899,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                        color:
-                        const Color(0xFFF08787).withOpacity(0.35)),
+                        color: const Color(0xFF6E8EF5).withOpacity(0.25)),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.06),
@@ -1886,7 +1916,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                         Container(
                           width: 6,
                           decoration: const BoxDecoration(
-                            color: Color(0xFFF08787),
+                            color: Color(0xFF6E8EF5),
                             borderRadius: BorderRadius.only(
                               topLeft: Radius.circular(16),
                               bottomLeft: Radius.circular(16),
@@ -1923,7 +1953,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                         overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(
                                             fontSize: 15,
-                                            fontWeight: FontWeight.w600,
+                                            fontWeight: FontWeight.w700,
                                             color: Color(0xFF1F1F1F)),
                                       ),
                                       const SizedBox(height: 6),
@@ -1940,10 +1970,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                                     horizontal: 8,
                                                     vertical: 4),
                                                 decoration: BoxDecoration(
-                                                  color: const Color(
-                                                      0xFFFFC7A7)
-                                                      .withOpacity(
-                                                      0.6),
+                                                  color: const Color(0xFF4FC3F7).withOpacity(0.25),
                                                   borderRadius:
                                                   BorderRadius
                                                       .circular(999),
@@ -1955,11 +1982,8 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                                       .ellipsis,
                                                   style: const TextStyle(
                                                       fontSize: 11,
-                                                      color: Color(
-                                                          0xFF5A4A42),
-                                                      fontWeight:
-                                                      FontWeight
-                                                          .w600),
+                                                      color: Color(0xFF1F1F1F),
+                                                      fontWeight: FontWeight.w600),
                                                 ),
                                               ),
                                             ),
@@ -1984,7 +2008,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                 const SizedBox(width: 8),
                                 IconButton(
                                   icon: const Icon(Icons.delete_outline,
-                                      color: Colors.black54),
+                                      color: Colors.black45),
                                   onPressed: () async {
                                     try {
                                       await supabase
