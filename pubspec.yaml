@@ -22,6 +22,7 @@ dependencies:
   clerk_flutter: ^0.0.12-beta
   supabase_flutter: ^2.10.3
   firebase_core: any
+  flutter_svg: ^2.0.10+1
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -30,6 +31,10 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icons/
+    - assets/illustrations/
+    - assets/example_data.json
 
 flutter_launcher_icons:
   android: true

@@ -8,10 +8,12 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "share_receiver"
+    private var methodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        methodChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getSharedText" -> {
                     val sharedText = getSharedText()
@@ -38,10 +40,17 @@ class MainActivity: FlutterActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_SEND) {
-            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-            if (sharedText != null) {
+            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
+            val sharedSubject = intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: ""
+            
+            // Combine subject and text to ensure we catch the URL wherever it is
+            val combined = "$sharedSubject $sharedText".trim()
+            
+            if (combined.isNotEmpty()) {
+                println("Link Saver Native: Received shared text: $combined")
+
                 // Store the shared text
-                setSharedText(sharedText)
+                setSharedText(combined)
             }
         }
     }
@@ -56,6 +65,9 @@ class MainActivity: FlutterActivity() {
             .edit()
             .putString("shared_text", text)
             .apply()
+            
+        // Push to Flutter if engine is ready
+        methodChannel?.invokeMethod("onSharedTextReceived", text)
     }
 
     private fun clearSharedText() {

@@ -1,0 +1,27 @@
+{
+  "folders": [
+    {"id": 1, "name": "Reading List"},
+    {"id": 2, "name": "Design Inspiration"},
+    {"id": 3, "name": "Flutter Tips"}
+  ],
+  "links": [
+    {"id": 101, "url": "https://flutter.dev", "title": "Flutter - Build apps for any screen", "folder_id": 3, "created_at": "2025-10-10T12:22:00Z"},
+    {"id": 102, "url": "https://material.io", "title": "Material Design", "folder_id": 3, "created_at": "2025-10-09T09:10:00Z"},
+    {"id": 103, "url": "https://dribbble.com", "title": "Dribbble", "folder_id": 2, "created_at": "2025-10-03T08:00:00Z"}
+  ],
+  "admin": {
+    "kpis": {"users": 1280, "links": 5640, "folders": 890, "active24h": 233},
+    "popularFolders": [
+      {"label": "Reading List", "value": 320},
+      {"label": "Design Inspiration", "value": 280},
+      {"label": "Flutter Tips", "value": 210},
+      {"label": "Other", "value": 90}
+    ],
+    "topSources": [
+      {"label": "flutter.dev", "value": 120},
+      {"label": "material.io", "value": 90},
+      {"label": "medium.com", "value": 80}
+    ]
+  }
+}
+

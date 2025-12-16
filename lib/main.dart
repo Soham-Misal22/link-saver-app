@@ -1,5 +1,7 @@
 // lib/main.dart
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
@@ -8,12 +10,49 @@ import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as html_parser;
 import 'package:animations/animations.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'theme/colors.dart';
+import 'theme/typography.dart';
+import 'theme/shapes.dart';
+import 'services/metadata_service.dart';
+import 'services/suggestion_service.dart';
 import 'package:clerk_flutter/clerk_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart' show MethodChannel, SystemNavigator;
 
 // ⚙️ Create a global Supabase client for easy access
 final supabase = Supabase.instance.client;
+
+// 🔗 Shared Data Manager - Persists shared URLs across auth states
+class SharedDataManager {
+  static final SharedDataManager _instance = SharedDataManager._internal();
+  factory SharedDataManager() => _instance;
+  SharedDataManager._internal();
+
+  String? pendingUrl;
+  String? pendingCaption;
+  bool hasPendingData = false;
+
+  void setSharedData(String url, String? caption) {
+    pendingUrl = url;
+    pendingCaption = caption;
+    hasPendingData = true;
+  }
+
+  (String?, String?) consumeSharedData() {
+    final url = pendingUrl;
+    final caption = pendingCaption;
+    pendingUrl = null;
+    pendingCaption = null;
+    hasPendingData = false;
+    return (url, caption);
+  }
+
+  void clearSharedData() {
+    pendingUrl = null;
+    pendingCaption = null;
+    hasPendingData = false;
+  }
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,11 +66,83 @@ Future<void> main() async {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
   @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  static const MethodChannel _shareChannel = MethodChannel('share_receiver');
+  final _sharedDataManager = SharedDataManager();
+
+  @override
+  void initState() {
+    super.initState();
+    _setupShareHandling();
+  }
+
+  void _setupShareHandling() {
+    // Set up MethodChannel listener for push-based sharing
+    _shareChannel.setMethodCallHandler(_handleMethodCall);
+    
+    // Check for initial shared text (cold start)
+    _checkInitialSharedText();
+  }
+
+  Future<dynamic> _handleMethodCall(MethodCall call) async {
+    if (call.method == 'onSharedTextReceived') {
+      final String? text = call.arguments as String?;
+      if (text != null) {
+        _processSharedText(text);
+      }
+    }
+  }
+
+  Future<void> _checkInitialSharedText() async {
+    try {
+      final String? value = await _shareChannel.invokeMethod<String>('getSharedText');
+      if (value != null && value.trim().isNotEmpty) {
+        _processSharedText(value);
+      }
+    } catch (e) {
+      print('Error checking shared text: $e');
+    }
+  }
+
+  void _processSharedText(String value) {
+    final parsed = _extractUrlAndCaption(value);
+    final urlToUse = parsed.$1 ?? value;
+    final captionToUse = parsed.$2;
+    
+    // Store in SharedDataManager for later use
+    _sharedDataManager.setSharedData(urlToUse, captionToUse);
+    print('LinkSaver: Shared data stored: $urlToUse');
+  }
+
+  (String?, String?) _extractUrlAndCaption(String text) {
+    try {
+      final RegExp urlRegex = RegExp(
+        r'((https?:\/\/)|(www\.))[^\s]+',
+        caseSensitive: false,
+      );
+      final match = urlRegex.firstMatch(text);
+      if (match == null) return (null, null);
+      final url = match.group(0);
+      if (url == null) return (null, null);
+      final caption = (text.replaceFirst(url, '').trim());
+      return (url, caption.isEmpty ? null : caption);
+    } catch (_) {
+      return (null, null);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final lightScheme = buildColorScheme(Brightness.light);
+    final lightTextTheme = AppTypography.textTheme(Brightness.light);
+
     return ClerkAuth(
       config: ClerkAuthConfig(
         publishableKey: 'pk_test_YnVzeS1yb2Jpbi01NS5jbGVyay5hY2NvdW50cy5kZXYk',
@@ -41,35 +152,31 @@ class MyApp extends StatelessWidget {
         title: 'Link Saver',
         theme: ThemeData(
           useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF6E8EF5),
-            brightness: Brightness.light,
-          ),
-          textTheme: GoogleFonts.interTextTheme(Theme.of(context).textTheme).copyWith(
-            headlineSmall: GoogleFonts.inter(fontWeight: FontWeight.w700),
-            titleMedium: GoogleFonts.inter(fontWeight: FontWeight.w600),
-            bodyMedium: GoogleFonts.inter(height: 1.3),
-          ),
-          scaffoldBackgroundColor: Colors.transparent,
-          appBarTheme: const AppBarTheme(
+          colorScheme: lightScheme,
+          textTheme: lightTextTheme,
+          scaffoldBackgroundColor: lightScheme.surface,
+          appBarTheme: AppBarTheme(
             backgroundColor: Colors.transparent,
             elevation: 0,
-            foregroundColor: Color(0xFF1F1F1F),
+            foregroundColor: lightScheme.onSurface,
           ),
           cardTheme: CardThemeData(
-            color: Colors.white,
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            color: lightScheme.surface,
+            elevation: 0,
+            shape: AppShapes.cardShape,
+            margin: const EdgeInsets.all(0),
           ),
           dialogTheme: DialogThemeData(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: AppShapes.dialogShape,
+            backgroundColor: lightScheme.surface,
+            surfaceTintColor: lightScheme.surface,
           ),
           elevatedButtonTheme: ElevatedButtonThemeData(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF6E8EF5),
+              backgroundColor: lightScheme.primary,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              shape: const StadiumBorder(),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
             ),
           ),
         ),
@@ -99,6 +206,7 @@ class AuthGate extends StatelessWidget {
         return _EnsureUserMapping(child: dest);
       },
       signedOutBuilder: (context, authState) {
+        // TEMPORARY: Revert to simple return until we find the correct loading property
         return const _SignedOutGate();
       },
     );
@@ -123,19 +231,24 @@ class _EnsureUserMappingState extends State<_EnsureUserMapping> {
   }
 
   Future<void> _ensure() async {
-    try {
-      final user = ClerkAuth.of(context).user;
-      if (user == null) return;
-      // Upsert mapping: if you later adopt different supabase user ids, replace value accordingly
-      await supabase
-          .from('user_mapping')
-          .upsert({
-            'clerk_user_id': user.id,
-            'supabase_user_id': user.id,
-          })
-          .select()
-          .maybeSingle();
-    } catch (_) {}
+    // Ensure mapping is created even on slower networks/devices
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        final user = ClerkAuth.of(context).user;
+        if (user == null) break;
+        final result = await supabase
+            .from('user_mapping')
+            .upsert({
+              'clerk_user_id': user.id,
+              'supabase_user_id': user.id,
+            })
+            .select()
+            .maybeSingle();
+        if (result != null) break;
+      } catch (e) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      }
+    }
     if (mounted) setState(() => _done = true);
   }
 
@@ -158,10 +271,12 @@ class _SignedOutGateState extends State<_SignedOutGate> {
   @override
   void initState() {
     super.initState();
-    // Briefly delay rendering the auth UI to avoid flashing the login screen
-    // while a valid session is being restored in the background.
-    Future<void>.delayed(const Duration(milliseconds: 600), () {
-      if (mounted) setState(() => _showAuth = true);
+    // Delay showing auth UI to allow for auto-login/session restoration
+    // Increased to 7s to observe the 5-6s loading time reported by user
+    Future.delayed(const Duration(milliseconds: 7000), () {
+      if (mounted) {
+        setState(() => _showAuth = true);
+      }
     });
   }
 
@@ -171,48 +286,104 @@ class _SignedOutGateState extends State<_SignedOutGate> {
       return const _SplashScreen();
     }
 
+    final sharedDataManager = SharedDataManager();
+    final hasPendingShare = sharedDataManager.hasPendingData;
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFFF08787),
-              Color(0xFFFFC7A7),
-              Color(0xFFFEE2AD),
-              Color(0xFFF8FAB4),
-            ],
-          ),
-        ),
+        decoration: const BoxDecoration(gradient: AppColors.primaryGradient),
         child: SafeArea(
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: Card(
-                elevation: 2,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
+          child: Column(
+            children: [
+              // Pending share banner
+              if (hasPendingShare) ...[
+                Container(
+                  width: double.infinity,
                   padding: const EdgeInsets.all(16),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        SizedBox(height: 8),
-                        Text(
-                          'Welcome to Link Saver',
-                          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  margin: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.link, color: Color(0xFF6E8EF5), size: 24),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Link ready to save!',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              sharedDataManager.pendingUrl ?? '',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ],
                         ),
-                        SizedBox(height: 12),
-                        ClerkAuthentication(),
-                      ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              Expanded(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: Card(
+                      elevation: 0,
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Welcome to', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: AppColors.textMuted)),
+                              const SizedBox(height: 4),
+                              const Text('Link Saver', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700)),
+                              const SizedBox(height: 16),
+                              if (hasPendingShare) ...[
+                                const Text(
+                                  '👆 Sign in to save your link',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF6E8EF5),
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                              ],
+                              const ClerkAuthentication(),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -226,18 +397,7 @@ class _SplashScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            Color(0xFFF08787),
-            Color(0xFFFFC7A7),
-            Color(0xFFFEE2AD),
-            Color(0xFFF8FAB4),
-          ],
-        ),
-      ),
+      decoration: const BoxDecoration(gradient: AppColors.primaryGradient),
       child: const SafeArea(
         child: Center(
           child: SizedBox(
@@ -245,7 +405,7 @@ class _SplashScreen extends StatelessWidget {
             height: 56,
             child: CircularProgressIndicator(
               strokeWidth: 4,
-              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF4CAF50)),
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.success),
             ),
           ),
         ),
@@ -272,7 +432,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
   List<Map<String, dynamic>> _topSources = [];
   List<Map<String, dynamic>> _popularFolders = [];
   List<Map<String, dynamic>> _newUsersSeries = [];
+  List<Map<String, dynamic>> _allUsersData = [];
   String? _newUsersSelection;
+  String _userActivityRange = 'Last 7 Days';
 
   @override
   void initState() {
@@ -293,7 +455,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
       final recentLinksF = supabase.from('saved_links').select('id, url, title, created_at, user_id').order('created_at', ascending: false).limit(10);
       final activeLinksF = supabase.from('saved_links').select('user_id, created_at').gte('created_at', since24h);
       final activeFoldersF = supabase.from('folders').select('user_id, created_at').gte('created_at', since24h);
-      final newUsersF = supabase.from('user_mapping').select('clerk_user_id, created_at').gte('created_at', since30d);
+      final since1y = now.subtract(const Duration(days: 365)).toIso8601String();
+      final newUsersF = supabase.from('user_mapping').select('clerk_user_id, created_at').gte('created_at', since1y);
 
       final results = await Future.wait([
         usersF,
@@ -373,14 +536,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
       // Recent saves
       final recent = recentLinks;
 
-      // New users last 30 days (daily counts)
+      // Store all user data for dynamic range filtering
+      final allUsers = List<Map<String, dynamic>>.from(newUsers);
+      
+      // New users last 30 days (daily counts) - default
       final byDay = <String, int>{};
       for (int i = 0; i < 30; i++) {
         final d = now.subtract(Duration(days: i));
         final key = '${d.year}-${_two(d.month)}-${_two(d.day)}';
         byDay[key] = 0;
       }
-      for (final u in newUsers) {
+      for (final u in allUsers) {
         final dt = _parseCreatedAtFlexible(u['created_at']);
         if (dt == null) continue;
         final key = '${dt.year}-${_two(dt.month)}-${_two(dt.day)}';
@@ -402,6 +568,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
         _topSources = topSourcesList;
         _popularFolders = popularFoldersList;
         _newUsersSeries = newUsersSeries;
+        _allUsersData = allUsers;
         _loading = false;
       });
     } catch (e) {
@@ -414,7 +581,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Admin Dashboard', style: TextStyle(color: Colors.white)),
+        toolbarHeight: 64,
+        titleSpacing: 24,
+        title: const Text(
+          'Admin Dashboard',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         actions: [
           IconButton(
             tooltip: 'Sign out',
@@ -426,77 +601,78 @@ class _AdminDashboardState extends State<AdminDashboard> {
         ],
         backgroundColor: Colors.transparent,
         elevation: 0,
+        systemOverlayStyle: SystemUiOverlayStyle.light,
         flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF3E5F8A), Color(0xFF5F7DC8)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
+          decoration: const BoxDecoration(gradient: AppColors.primaryGradient),
+          padding: const EdgeInsets.only(top: 16),
+        ),
+        shape: const Border(
+          bottom: BorderSide(color: Colors.white24, width: 0.4),
         ),
       ),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFF74EBD5),
-              Color(0xFF9FACE6),
-            ],
-          ),
-        ),
+        color: AppColors.surface,
         child: SafeArea(
           child: _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const _DashboardSkeleton()
               : RefreshIndicator(
                   onRefresh: _loadAdminData,
                   child: ListView(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
                     children: [
-                      _KpiRow(cards: [
-                        _KpiCard(title: 'Total Users', value: _totalUsers.toString(), icon: Icons.people),
-                        _KpiCard(title: 'Total Links Saved', value: _totalLinks.toString(), icon: Icons.link),
-                        _KpiCard(title: 'Total Folders', value: _totalFolders.toString(), icon: Icons.folder),
-                        _KpiCard(title: 'Active Users (24h)', value: _activeUsersToday.toString(), icon: Icons.insights),
-                      ]),
-                      const SizedBox(height: 16),
+                      _KpiGrid(
+                        cards: [
+                          _KpiCardData(
+                            title: 'Total Users',
+                            value: _totalUsers.toString(),
+                            icon: Icons.people,
+                          ),
+                          _KpiCardData(
+                            title: 'Total Links Saved',
+                            value: _totalLinks.toString(),
+                            icon: Icons.link,
+                          ),
+                          _KpiCardData(
+                            title: 'Total Folders',
+                            value: _totalFolders.toString(),
+                            icon: Icons.folder,
+                          ),
+                          _KpiCardData(
+                            title: 'Active Users (24h)',
+                            value: _activeUsersToday.toString(),
+                            icon: Icons.insights,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
                       _SectionCard(
                         title: 'Content Insights',
-                        child: Column(
-                          children: [
-                            _PieChart(title: 'Most Popular Folders', items: _popularFolders),
-                            const SizedBox(height: 12),
-                            _BarChart(title: 'Top Saved Sources', items: _topSources),
-                            const SizedBox(height: 12),
-                            _RecentSavesList(items: _recentSaves),
-                          ],
+                        subtitle: 'How your community is saving content',
+                        child: _ContentInsightsSection(
+                          popularFolders: _popularFolders,
+                          topSources: _topSources,
+                          recentSaves: _recentSaves,
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 20),
                       _SectionCard(
                         title: 'User Activity',
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _LineSeries(
-                              title: 'New Users (30 days)',
-                              series: _newUsersSeries,
-                              onPointTap: (p) {
-                                setState(() {
-                                  _newUsersSelection = '${p['date']}: ${p['value']}';
-                                });
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('New users on ${p['date']}: ${p['value']}')),
-                                );
-                              },
-                            ),
-                            if (_newUsersSelection != null) ...[
-                              const SizedBox(height: 8),
-                              Text(_newUsersSelection!, style: const TextStyle(fontSize: 12, color: Colors.black54)),
-                            ],
-                          ],
+                        subtitle: 'New user registrations over time',
+                        child: _UserActivitySection(
+                          allUsersData: _allUsersData,
+                          selectedRange: _userActivityRange,
+                          onRangeChanged: (range) {
+                            setState(() {
+                              _userActivityRange = range;
+                              _newUsersSelection = null;
+                            });
+                          },
+                          onPointTap: (p) {
+                            setState(() {
+                              _newUsersSelection = '${p['date']}: ${p['value']} users';
+                            });
+                          },
+                          selectedLabel: _newUsersSelection,
                         ),
                       ),
                     ],
@@ -508,24 +684,41 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 }
 
-class _KpiRow extends StatelessWidget {
-  final List<_KpiCard> cards;
-  const _KpiRow({required this.cards});
+class _KpiCardData {
+  final String title;
+  final String value;
+  final IconData icon;
+  const _KpiCardData({
+    required this.title,
+    required this.value,
+    required this.icon,
+  });
+}
+
+class _KpiGrid extends StatelessWidget {
+  final List<_KpiCardData> cards;
+  const _KpiGrid({required this.cards});
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isWide = constraints.maxWidth > 760;
-        final cross = isWide ? 2 : 1;
+        final isTablet = constraints.maxWidth >= 720;
+        final columnCount = isTablet ? 4 : 2;
+        final spacing = 12.0;
+        final cardWidth = (constraints.maxWidth - spacing * (columnCount - 1)) / columnCount;
+
         return Wrap(
-          spacing: 12,
-          runSpacing: 12,
+          spacing: spacing,
+          runSpacing: spacing,
           children: cards
-              .map((c) => SizedBox(
-                    width: isWide ? (constraints.maxWidth - 12 * (cross - 1)) / 2 : constraints.maxWidth,
-                    child: c,
-                  ))
+              .map(
+                (card) => SizedBox(
+                  width: cardWidth,
+                  height: 100, // Fixed height for consistency
+                  child: _KpiCard(card: card),
+                ),
+              )
               .toList(),
         );
       },
@@ -534,37 +727,68 @@ class _KpiRow extends StatelessWidget {
 }
 
 class _KpiCard extends StatelessWidget {
-  final String title;
-  final String value;
-  final IconData icon;
-  const _KpiCard({required this.title, required this.value, required this.icon});
+  final _KpiCardData card;
+  const _KpiCard({required this.card});
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          children: [
-            Container(
-              decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.all(12),
-              child: Icon(icon, color: const Color(0xFF1F1F1F)),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: const TextStyle(fontSize: 13, color: Colors.black54)),
-                  const SizedBox(height: 6),
-                  Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
-                ],
+    return Material(
+      color: AppColors.card,
+      elevation: 0,
+      borderRadius: AppShapes.cardRadius,
+      child: InkWell(
+        borderRadius: AppShapes.cardRadius,
+        onTap: () {},
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                height: 48,
+                width: 48,
+                decoration: BoxDecoration(
+                  color: AppColors.iconSurface,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(card.icon, color: AppColors.textPrimary, size: 24),
               ),
-            ),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        card.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppColors.textMuted,
+                              fontSize: 12,
+                            ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        card.value,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                              fontSize: 20,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -573,21 +797,37 @@ class _KpiCard extends StatelessWidget {
 
 class _SectionCard extends StatelessWidget {
   final String title;
+  final String? subtitle;
   final Widget child;
-  const _SectionCard({required this.title, required this.child});
+  const _SectionCard({required this.title, this.subtitle, required this.child});
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 0,
+      color: AppColors.card,
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                subtitle!,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.textMuted,
+                    ),
+              ),
+            ],
+            const SizedBox(height: 16),
             child,
           ],
         ),
@@ -596,66 +836,175 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-class _BarChart extends StatelessWidget {
-  final String title;
-  final List<Map<String, dynamic>> items; // [{'label':..., 'value':...}]
-  const _BarChart({required this.title, required this.items});
+class _DashboardSkeleton extends StatelessWidget {
+  const _DashboardSkeleton();
 
   @override
   Widget build(BuildContext context) {
-    final max = (items.isEmpty) ? 0 : items.map((e) => (e['value'] as int)).reduce((a, b) => a > b ? a : b);
+    Widget skeleton({double height = 80, double radius = 16}) {
+      return Container(
+        height: height,
+        decoration: BoxDecoration(
+          color: AppColors.surfaceAlt,
+          borderRadius: BorderRadius.circular(radius),
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      children: [
+        Row(
+          children: [
+            Expanded(child: skeleton(height: 84)),
+            const SizedBox(width: 12),
+            Expanded(child: skeleton(height: 84)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(child: skeleton(height: 84)),
+            const SizedBox(width: 12),
+            Expanded(child: skeleton(height: 84)),
+          ],
+        ),
+        const SizedBox(height: 20),
+        skeleton(height: 320, radius: 20),
+        const SizedBox(height: 20),
+        skeleton(height: 220, radius: 20),
+      ],
+    );
+  }
+}
+
+class _ContentInsightsSection extends StatelessWidget {
+  final List<Map<String, dynamic>> popularFolders;
+  final List<Map<String, dynamic>> topSources;
+  final List<Map<String, dynamic>> recentSaves;
+
+  const _ContentInsightsSection({
+    required this.popularFolders,
+    required this.topSources,
+    required this.recentSaves,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final total = popularFolders.fold<int>(0, (sum, e) => sum + ((e['value'] ?? 0) as int));
+    final leading = popularFolders.isEmpty
+        ? null
+        : popularFolders.reduce((a, b) => ((a['value'] ?? 0) as int) >= ((b['value'] ?? 0) as int) ? a : b);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
+        _PieChart(items: popularFolders),
+        if (leading != null) ...[
+          const SizedBox(height: 12),
+          Builder(
+            builder: (context) {
+              final leadingValue = (leading['value'] ?? 0) as int;
+              final percentage = total == 0 ? 0.0 : (leadingValue * 100.0) / total.toDouble();
+              final pctLabel = percentage.toStringAsFixed(percentage >= 10 ? 0 : 1);
+              return Text(
+                '${leading['label']} holds $pctLabel% of saves',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textMuted),
+              );
+            },
+          ),
+        ],
+        const SizedBox(height: 24),
+        _TopSourcesChart(items: topSources),
+        const SizedBox(height: 24),
+        _RecentSavesList(items: recentSaves),
+      ],
+    );
+  }
+}
+
+class _TopSourcesChart extends StatelessWidget {
+  final List<Map<String, dynamic>> items;
+  const _TopSourcesChart({required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    if (items.isEmpty) {
+      return _EmptyMetricState(message: 'No top sources yet.');
+    }
+
+    final max = items.map((e) => (e['value'] as int)).fold<int>(0, (prev, val) => val > prev ? val : prev);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Top Saved Sources',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
         ),
-        const SizedBox(height: 8),
-        ...items.map((e) {
-          final v = (e['value'] as int);
-          final ratio = max == 0 ? 0.0 : (v / max).clamp(0.0, 1.0);
-          final label = (e['label'] ?? '').toString();
+        const SizedBox(height: 12),
+        ...items.map((item) {
+          final value = (item['value'] as int);
+          final ratio = max == 0 ? 0.0 : (value / max).clamp(0.0, 1.0).toDouble();
           return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6.0),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
                     Expanded(
-                      child: Stack(
-                        children: [
-                          Container(
-                            height: 18,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF9FACE6).withOpacity(0.30),
-                              borderRadius: BorderRadius.circular(6),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: Stack(
+                          children: [
+                            Container(
+                              height: 14,
+                              color: const Color(0xFFEAF1F8),
                             ),
-                          ),
-                          FractionallySizedBox(
-                            widthFactor: ratio,
-                            child: Container(
-                              height: 18,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF5F7DC8),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
+                            LayoutBuilder(
+                              builder: (context, constraints) {
+                                return TweenAnimationBuilder<double>(
+                                  duration: const Duration(milliseconds: 400),
+                                  curve: Curves.easeOutCubic,
+                                  tween: Tween<double>(begin: 0.0, end: ratio),
+                                  builder: (context, animated, child) {
+                                    return Container(
+                                      height: 14,
+                                      width: constraints.maxWidth * animated,
+                                      decoration: const BoxDecoration(
+                                        gradient: AppColors.primaryGradient,
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    SizedBox(width: 56, child: Text('$v', textAlign: TextAlign.right)),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        '$value',
+                        textAlign: TextAlign.right,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 4),
-                Text(label, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(height: 6),
+                Text(
+                  (item['label'] ?? '').toString(),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textMuted),
+                ),
               ],
             ),
           );
-        }).toList(),
+        }),
       ],
     );
   }
@@ -667,68 +1016,120 @@ class _RecentSavesList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (items.isEmpty) {
+      return _EmptyMetricState(message: 'No recent saves to show.');
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Align(
-          alignment: Alignment.centerLeft,
-          child: Text('Recent Saves', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
+        Text(
+          'Recent Saves',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
         ),
-        const SizedBox(height: 8),
-        ...items.map((e) {
-          return ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.link),
-            title: Text((e['title'] ?? e['url'] ?? '').toString(), maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(_hostOf(e['url'])),
-          );
-        }).toList(),
-      ],
-    );
-  }
-}
-
-class _LineSeries extends StatelessWidget {
-  final String title;
-  final List<Map<String, dynamic>> series; // [{'date': 'YYYY-MM-DD', 'value': int}]
-  final ValueChanged<Map<String, dynamic>>? onPointTap;
-  const _LineSeries({required this.title, required this.series, this.onPointTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final max = (series.isEmpty) ? 0 : series.map((e) => (e['value'] as int)).reduce((a, b) => a > b ? a : b);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 120,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: series.map((e) {
-              final v = (e['value'] as int);
-              final ratio = max == 0 ? 0.0 : (v / max).clamp(0.0, 1.0);
-              return Expanded(
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: GestureDetector(
-                    onTap: () => onPointTap?.call({'date': e['date'], 'value': v}),
-                    child: Container(
-                      height: 10 + 90 * ratio,
-                      margin: const EdgeInsets.symmetric(horizontal: 1),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF74EBD5),
-                        borderRadius: BorderRadius.circular(3),
+        const SizedBox(height: 12),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 400),
+          child: ListView.separated(
+            shrinkWrap: true,
+            physics: const AlwaysScrollableScrollPhysics(),
+            itemBuilder: (context, index) {
+              final item = items[index];
+              final title = (item['title'] ?? item['url'] ?? '').toString();
+              final host = _hostOf(item['url']);
+              final createdAt = _formatSavedAt(item['created_at'] ?? item['saved_at']);
+              return InkWell(
+                onTap: () {},
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        height: 36,
+                        width: 36,
+                        decoration: BoxDecoration(
+                          color: AppColors.iconSurface,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(Icons.link, size: 20, color: AppColors.textPrimary),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    height: 1.3,
+                                  ),
+                            ),
+                            const SizedBox(height: 4),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 4,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                if (host.isNotEmpty)
+                                  Flexible(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.iconSurface,
+                                        borderRadius: BorderRadius.circular(999),
+                                      ),
+                                      child: Text(
+                                        host,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                              fontWeight: FontWeight.w500,
+                                              color: AppColors.textMuted,
+                                            ),
+                                      ),
+                                    ),
+                                  ),
+                                if (createdAt.isNotEmpty)
+                                  Flexible(
+                                    child: Text(
+                                      createdAt,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                            color: AppColors.textMuted,
+                                          ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.more_horiz, size: 20, color: AppColors.textMuted),
+                        tooltip: 'More actions',
+                        onPressed: () {},
+                        constraints: const BoxConstraints(),
+                        padding: EdgeInsets.zero,
+                      ),
+                    ],
                   ),
                 ),
               );
-            }).toList(),
+            },
+            separatorBuilder: (context, index) => const Divider(
+              height: 1,
+              indent: 48,
+              color: AppColors.divider,
+            ),
+            itemCount: items.length,
           ),
         ),
       ],
@@ -736,100 +1137,613 @@ class _LineSeries extends StatelessWidget {
   }
 }
 
-class _Leaderboard extends StatelessWidget {
-  final String title;
-  final List<Map<String, dynamic>> items; // [{'user': id, 'value': count}]
-  const _Leaderboard({required this.title, required this.items});
+class _UserActivitySection extends StatelessWidget {
+  final List<Map<String, dynamic>> allUsersData;
+  final String selectedRange;
+  final ValueChanged<String> onRangeChanged;
+  final ValueChanged<Map<String, dynamic>> onPointTap;
+  final String? selectedLabel;
+
+  const _UserActivitySection({
+    required this.allUsersData,
+    required this.selectedRange,
+    required this.onRangeChanged,
+    required this.onPointTap,
+    this.selectedLabel,
+  });
+
+  List<Map<String, dynamic>> _calculateSeriesForRange(String range) {
+    final now = DateTime.now();
+    
+    int days;
+    String periodType;
+    if (range == 'Last 7 Days') {
+      days = 7;
+      periodType = 'day';
+    } else if (range == 'Last Month') {
+      days = 30;
+      periodType = 'day';
+    } else { // Last Year
+      days = 12;
+      periodType = 'month';
+    }
+
+    if (periodType == 'day') {
+      final byDay = <String, int>{};
+      for (int i = 0; i < days; i++) {
+        final d = now.subtract(Duration(days: i));
+        final key = '${d.year}-${_two(d.month)}-${_two(d.day)}';
+        byDay[key] = 0;
+      }
+      for (final u in allUsersData) {
+        final dt = _parseCreatedAtFlexible(u['created_at']);
+        if (dt == null) continue;
+        final key = '${dt.year}-${_two(dt.month)}-${_two(dt.day)}';
+        if (byDay.containsKey(key)) {
+          byDay[key] = (byDay[key] ?? 0) + 1;
+        }
+      }
+      final sortedDays = byDay.entries.toList()
+        ..sort((a, b) => a.key.compareTo(b.key));
+      return sortedDays.map((e) => {'date': e.key, 'value': e.value}).toList();
+    } else {
+      final byMonth = <String, int>{};
+      for (int i = 0; i < days; i++) {
+        final d = now.subtract(Duration(days: i * 30));
+        final key = '${d.year}-${_two(d.month)}';
+        byMonth[key] = 0;
+      }
+      for (final u in allUsersData) {
+        final dt = _parseCreatedAtFlexible(u['created_at']);
+        if (dt == null) continue;
+        final key = '${dt.year}-${_two(dt.month)}';
+        if (byMonth.containsKey(key)) {
+          byMonth[key] = (byMonth[key] ?? 0) + 1;
+        }
+      }
+      final sortedMonths = byMonth.entries.toList()
+        ..sort((a, b) => a.key.compareTo(b.key));
+      return sortedMonths.map((e) => {'date': e.key, 'value': e.value}).toList();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final series = _calculateSeriesForRange(selectedRange);
+    final totalNewUsers = series.fold<int>(0, (sum, e) => sum + ((e['value'] ?? 0) as int));
+    
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'New Users',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '+$totalNewUsers',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppColors.divider),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: DropdownButton<String>(
+                value: selectedRange,
+                underline: const SizedBox(),
+                isDense: true,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w500,
+                    ),
+                items: const [
+                  DropdownMenuItem(value: 'Last 7 Days', child: Text('Last 7 Days')),
+                  DropdownMenuItem(value: 'Last Month', child: Text('Last Month')),
+                  DropdownMenuItem(value: 'Last Year', child: Text('Last Year')),
+                ],
+                onChanged: (value) {
+                  if (value != null) onRangeChanged(value);
+                },
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 8),
-        ...items.map((e) {
-          final user = (e['user'] ?? '').toString();
-          final short = user.length > 8 ? '${user.substring(0, 8)}…' : user;
-          return ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const CircleAvatar(child: Icon(Icons.person, size: 18)),
-            title: Text('User: $short'),
-            trailing: Text('${e['value']}', style: const TextStyle(fontWeight: FontWeight.w600)),
-          );
-        }).toList(),
+        const SizedBox(height: 20),
+        _UserActivityChart(series: series, range: selectedRange, onPointTap: onPointTap),
+        if (selectedLabel != null && selectedLabel!.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.iconSurface,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, size: 16, color: AppColors.textMuted),
+                const SizedBox(width: 8),
+                Text(
+                  selectedLabel!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textMuted),
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
     );
+  }
+}
+
+class _UserActivityChart extends StatelessWidget {
+  final List<Map<String, dynamic>> series;
+  final String range;
+  final ValueChanged<Map<String, dynamic>> onPointTap;
+
+  const _UserActivityChart({
+    required this.series,
+    required this.range,
+    required this.onPointTap,
+  });
+
+  String _formatDateLabel(String date, String range) {
+    try {
+      if (range == 'Last Year') {
+        final parts = date.split('-');
+        if (parts.length >= 2) {
+          final month = int.tryParse(parts[1]) ?? 1;
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          return monthNames[month - 1];
+        }
+        return date;
+      } else {
+        // For day-based ranges, parse the date string properly
+        final parts = date.split('-');
+        if (parts.length >= 3) {
+          final year = int.tryParse(parts[0]) ?? DateTime.now().year;
+          final month = int.tryParse(parts[1]) ?? 1;
+          final day = int.tryParse(parts[2]) ?? 1;
+          
+          // Format as "DD/MM" or "DD Mon" for better readability
+          final monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          if (range == 'Last 7 Days') {
+            return '$day ${monthNames[month - 1]}';
+          } else {
+            return '$day/$month';
+          }
+        }
+        return date;
+      }
+    } catch (_) {
+      return date;
+    }
+  }
+
+  List<int> _calculateYAxisLabels(int max) {
+    if (max == 0) return [0, 1, 2, 3, 4];
+    
+    // Smart scaling for better visualization
+    int step;
+    if (max <= 5) {
+      step = 1;
+    } else if (max <= 20) {
+      step = ((max / 4).ceil()).clamp(1, 5);
+    } else if (max <= 100) {
+      step = ((max / 4).ceil() / 5).ceil() * 5; // Round to nearest 5
+    } else if (max <= 1000) {
+      step = ((max / 4).ceil() / 10).ceil() * 10; // Round to nearest 10
+    } else {
+      step = ((max / 4).ceil() / 100).ceil() * 100; // Round to nearest 100
+    }
+    
+    final labels = <int>[];
+    for (int i = 0; i <= 4; i++) {
+      labels.add(i * step);
+    }
+    // Ensure the max value is included or close to it
+    if (labels.last < max) {
+      labels[4] = ((max / step).ceil() * step);
+    }
+    return labels;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (series.isEmpty) {
+      return const _EmptyMetricState(message: 'No user activity recorded yet.');
+    }
+    final max = series.map((e) => (e['value'] as int)).fold<int>(0, (prev, val) => val > prev ? val : prev);
+    // Calculate Y-axis labels first to get the proper max
+    final yAxisLabels = _calculateYAxisLabels(max);
+    // Use the max from Y-axis labels for consistent scaling
+    final maxValue = yAxisLabels.isNotEmpty ? yAxisLabels.last : (max == 0 ? 1 : max);
+    const chartHeight = 220.0;
+
+    return SizedBox(
+      height: chartHeight + 60,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Y-axis labels
+          SizedBox(
+            width: 35,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: yAxisLabels.reversed
+                  .map((v) => SizedBox(
+                        height: chartHeight / 4,
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Text(
+                              '$v',
+                              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: AppColors.textMuted,
+                                    fontSize: 10,
+                                  ),
+                              textAlign: TextAlign.right,
+                            ),
+                          ),
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Chart area
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  height: chartHeight,
+                  width: double.infinity,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return TweenAnimationBuilder<double>(
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                        tween: Tween<double>(begin: 0.0, end: 1.0),
+                        builder: (context, t, _) {
+                          return CustomPaint(
+                            painter: _LineChartPainter(
+                              series: series,
+                              maxValue: maxValue,
+                              progress: t,
+                            ),
+                            size: Size(constraints.maxWidth, chartHeight),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // X-axis labels - show more labels for better readability
+                SizedBox(
+                  height: 32,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // Calculate how many labels we can fit
+                      final labelCount = series.length <= 7 ? series.length : 
+                                       (series.length <= 14 ? (series.length / 2).ceil() : 5);
+                      final step = series.length > 1 ? (series.length - 1) / (labelCount - 1) : 1;
+                      
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: List.generate(labelCount, (index) {
+                          final dataIndex = (index * step).round().clamp(0, series.length - 1);
+                          final dateLabel = _formatDateLabel(series[dataIndex]['date'], range);
+                          return Flexible(
+                            child: Text(
+                              dateLabel,
+                              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: AppColors.textMuted,
+                                    fontSize: 9,
+                                  ),
+                              textAlign: index == 0 ? TextAlign.left : 
+                                        index == labelCount - 1 ? TextAlign.right : TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          );
+                        }),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LineChartPainter extends CustomPainter {
+  final List<Map<String, dynamic>> series;
+  final int maxValue;
+  final double progress; // 0..1 line draw animation
+
+  _LineChartPainter({
+    required this.series,
+    required this.maxValue,
+    required this.progress,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (series.isEmpty || maxValue <= 0) return;
+    
+    final chartHeight = size.height;
+    final chartWidth = size.width;
+    final paddingTop = 25.0; // Increased for value labels
+    final paddingBottom = 5.0;
+    final paddingLeft = 2.0; // Small left padding for alignment
+    final paddingRight = 2.0;
+    final usableHeight = chartHeight - paddingTop - paddingBottom;
+    final usableWidth = chartWidth - paddingLeft - paddingRight;
+    
+    // Calculate step for X-axis - ensure proper spacing
+    final stepX = series.length > 1 
+        ? usableWidth / (series.length - 1) 
+        : usableWidth / 2;
+
+    // Calculate actual max from Y-axis labels (for proper alignment)
+    final yAxisMax = maxValue;
+    final yAxisStep = yAxisMax / 4;
+    
+    // Draw gridlines (horizontal lines) - aligned with Y-axis labels
+    final gridPaint = Paint()
+      ..color = AppColors.divider.withValues(alpha: 0.25)
+      ..strokeWidth = 1;
+    for (int i = 0; i <= 4; i++) {
+      final y = paddingTop + (usableHeight * (i / 4));
+      canvas.drawLine(
+        Offset(paddingLeft, y),
+        Offset(chartWidth - paddingRight, y),
+        gridPaint,
+      );
+    }
+
+    // Calculate data points with proper Y-axis alignment
+    final points = <Offset>[];
+    for (int i = 0; i < series.length; i++) {
+      final value = (series[i]['value'] as int);
+      final x = paddingLeft + (stepX * i);
+      // Use yAxisMax for scaling to ensure alignment with gridlines
+      final ratio = yAxisMax > 0 ? (value / yAxisMax).clamp(0.0, 1.0) : 0.0;
+      // Calculate Y from bottom, ensuring alignment with gridlines
+      final y = paddingTop + usableHeight - (ratio * usableHeight);
+      points.add(Offset(x, y));
+    }
+
+    // Draw line path
+    if (points.length > 1) {
+      final path = Path();
+      path.moveTo(points[0].dx, points[0].dy);
+      for (int i = 1; i < points.length; i++) {
+        path.lineTo(points[i].dx, points[i].dy);
+      }
+
+      // Animate line drawing
+      final metrics = path.computeMetrics();
+      final animatedPath = Path();
+      if (metrics.isNotEmpty) {
+        double totalLength = 0;
+        for (final metric in metrics) {
+          totalLength += metric.length;
+        }
+        double remaining = totalLength * progress;
+        for (final metric in metrics) {
+          final extract = metric.extractPath(0, remaining.clamp(0.0, metric.length));
+          animatedPath.addPath(extract, Offset.zero);
+          remaining -= metric.length;
+          if (remaining <= 0) break;
+        }
+      }
+
+      // Draw red line
+      final linePaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..color = const Color(0xFFEF4444);
+      canvas.drawPath(animatedPath, linePaint);
+    }
+
+    // Draw square points and value labels
+    final squarePaint = Paint()
+      ..color = const Color(0xFFEF4444)
+      ..style = PaintingStyle.fill;
+    
+    final textStyle = const TextStyle(
+      color: Color(0xFF111827),
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+      fontFamily: 'Inter',
+    );
+    
+    final visiblePoints = (series.length * progress).ceil();
+    for (int i = 0; i < visiblePoints && i < points.length; i++) {
+      final point = points[i];
+      final value = (series[i]['value'] as int);
+      
+      // Draw red square (6x6px with rounded corners)
+      final squareSize = 6.0;
+      final squareRect = RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: point,
+          width: squareSize,
+          height: squareSize,
+        ),
+        const Radius.circular(1),
+      );
+      canvas.drawRRect(squareRect, squarePaint);
+      
+      // Draw value label above the point
+      final textPainter = TextPainter(
+        text: TextSpan(text: '$value', style: textStyle),
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
+      final labelY = point.dy - textPainter.height - 8;
+      textPainter.paint(
+        canvas,
+        Offset(
+          point.dx - textPainter.width / 2,
+          labelY.clamp(0.0, chartHeight - textPainter.height),
+        ),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LineChartPainter oldDelegate) {
+    return oldDelegate.series != series || oldDelegate.maxValue != maxValue || oldDelegate.progress != progress;
   }
 }
 
 class _PieChart extends StatelessWidget {
-  final String title;
-  final List<Map<String, dynamic>> items; // [{'label':..., 'value':...}]
-  const _PieChart({required this.title, required this.items});
+  final List<Map<String, dynamic>> items;
+  const _PieChart({required this.items});
 
   @override
   Widget build(BuildContext context) {
-    final total = items.fold<int>(0, (sum, e) => sum + (e['value'] as int));
-    final colors = <Color>[
-      const Color(0xFF5F7DC8),
-      const Color(0xFF74EBD5),
-      const Color(0xFFF08787),
-      const Color(0xFFFFC7A7),
-      const Color(0xFFFEE2AD),
-      const Color(0xFFF8FAB4),
-      const Color(0xFF9FACE6),
+    if (items.isEmpty) {
+      return const _EmptyMetricState(message: 'No folder distribution data yet.');
+    }
+
+    final colors = [
+      const Color(0xFF5B6FE6),
+      const Color(0xFF0EA5E9),
+      const Color(0xFF2DD4BF),
+      const Color(0xFFFF8F6B),
+      const Color(0xFF8B5CF6),
+      const Color(0xFFFFC857),
     ];
+    final total = items.fold<int>(0, (sum, e) => sum + ((e['value'] ?? 0) as int));
+    final semanticsSummary = items
+        .map((e) {
+          final label = (e['label'] ?? 'Unnamed').toString();
+          final value = (e['value'] ?? 0) as int;
+          final pct = total == 0 ? 0 : ((value * 100) / total).round();
+          return '$label $pct percent';
+        })
+        .join(', ');
+
+    return Semantics(
+      label: 'Popular folder distribution',
+      value: semanticsSummary,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isWide = constraints.maxWidth > 520;
+          final legend = _buildLegend(items, colors, total, context);
+          return isWide
+              ? Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 220,
+                        child: TweenAnimationBuilder<double>(
+                          tween: Tween(begin: 0, end: 1),
+                          duration: const Duration(milliseconds: 600),
+                          curve: Curves.easeOutCubic,
+                          builder: (context, value, child) {
+                            return CustomPaint(
+                              painter: _PiePainter(items: items, colors: colors, animationValue: value),
+                              child: const SizedBox.expand(),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 24),
+                    SizedBox(width: 200, child: legend),
+                  ],
+                )
+              : Column(
+                  children: [
+                    SizedBox(
+                      height: 220,
+                      child: TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0, end: 1),
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                        builder: (context, value, child) {
+                          return CustomPaint(
+                            painter: _PiePainter(items: items, colors: colors, animationValue: value),
+                            child: const SizedBox.expand(),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    legend,
+                  ],
+                );
+        },
+      ),
+    );
+  }
+
+  Widget _buildLegend(
+    List<Map<String, dynamic>> items,
+    List<Color> colors,
+    int total,
+    BuildContext context,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.black87)),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 200,
-          child: Row(
-            children: [
-              Expanded(
-                child: CustomPaint(
-                  painter: _PiePainter(items: items, colors: colors),
-                  child: const SizedBox.expand(),
+        ...List.generate(items.length, (index) {
+          final entry = items[index];
+          final label = (entry['label'] ?? '').toString();
+          final value = (entry['value'] ?? 0) as int;
+          final pct = total == 0 ? 0.0 : (value * 100.0) / total.toDouble();
+          final pctLabel = pct.toStringAsFixed(pct >= 10 ? 0 : 1);
+
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              children: [
+                Container(
+                  height: 12,
+                  width: 12,
+                  decoration: BoxDecoration(
+                    color: colors[index % colors.length],
+                    borderRadius: BorderRadius.circular(4),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 140,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    ...List.generate(items.length, (i) {
-                      final e = items[i];
-                      final c = colors[i % colors.length];
-                      final label = (e['label'] ?? '').toString();
-                      final v = (e['value'] as int);
-                      final pct = total == 0 ? 0 : ((v * 100) / total).round();
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Row(
-                          children: [
-                            Container(width: 12, height: 12, decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(2))),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text('$label ($pct%)', maxLines: 1, overflow: TextOverflow.ellipsis)),
-                          ],
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '$label · $pctLabel%',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textMuted,
                         ),
-                      );
-                    }),
-                  ],
+                  ),
                 ),
-              )
-            ],
-          ),
-        ),
+              ],
+            ),
+          );
+        }),
       ],
     );
   }
@@ -838,39 +1752,80 @@ class _PieChart extends StatelessWidget {
 class _PiePainter extends CustomPainter {
   final List<Map<String, dynamic>> items;
   final List<Color> colors;
-  _PiePainter({required this.items, required this.colors});
+  final double animationValue;
+
+  _PiePainter({
+    required this.items,
+    required this.colors,
+    required this.animationValue,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final total = items.fold<int>(0, (sum, e) => sum + (e['value'] as int));
-    final rect = Rect.fromLTWH(0, 0, size.width, size.height);
-    final double padding = 8;
-    final double dim = (size.shortestSide - padding * 2).clamp(0.0, 9999.0);
-    final Offset center = Offset(size.width / 2, size.height / 2);
-    final double radius = dim / 2;
+    final total = items.fold<int>(0, (sum, e) => sum + ((e['value'] ?? 0) as int));
+    final dim = size.shortestSide;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = dim / 2.2;
 
-    double startRads = -3.14159 / 2; // start at top
+    double startAngle = -math.pi / 2;
     for (int i = 0; i < items.length; i++) {
-      final v = (items[i]['value'] as int);
-      final sweep = total == 0 ? 0.0 : (v / total) * 6.28318; // 2*pi
+      final value = (items[i]['value'] ?? 0) as int;
+      final sweep = total == 0 ? 0.0 : (value / total) * 2 * math.pi * animationValue;
       final paint = Paint()
-        ..style = PaintingStyle.fill
-        ..color = colors[i % colors.length];
-      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startRads, sweep, true, paint);
-      startRads += sweep;
+        ..color = colors[i % colors.length]
+        ..style = PaintingStyle.fill;
+      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), startAngle, sweep, true, paint);
+      startAngle += sweep;
     }
 
-    // Optional inner hole for a donut look
     final holePaint = Paint()
-      ..style = PaintingStyle.fill
-      ..color = const Color(0xFFFFFFFF);
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
     canvas.drawCircle(center, radius * 0.55, holePaint);
   }
 
   @override
   bool shouldRepaint(covariant _PiePainter oldDelegate) {
-    return oldDelegate.items != items;
+    return oldDelegate.items != items || oldDelegate.animationValue != animationValue;
   }
+}
+
+class _EmptyMetricState extends StatelessWidget {
+  final String message;
+  const _EmptyMetricState({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline, color: AppColors.textMuted),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              message,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textMuted),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _condensedDate(dynamic dateString) {
+  if (dateString == null) return '';
+  final String input = dateString.toString();
+  if (input.length >= 10) {
+    return '${input.substring(5, 7)}/${input.substring(8, 10)}';
+  }
+  return input;
 }
 
 
@@ -889,8 +1844,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   String? _sharedCaption;
-  static const MethodChannel _shareChannel = MethodChannel('share_receiver');
-  AppLifecycleState? _lastLifecycleState;
+  final _sharedDataManager = SharedDataManager();
   int _foldersLoadAttempts = 0;
   
   Future<String?> _getMappedUserId() async {
@@ -923,11 +1877,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _refreshFolders();
-    _checkInitialSharedText();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _listenForNewSharedText();
-    });
+    _checkForPendingShare(); // Check SharedDataManager for pending shares after auth
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  // Check SharedDataManager for pending shares (after successful login)
+  void _checkForPendingShare() {
+    if (_sharedDataManager.hasPendingData) {
+      final (url, caption) = _sharedDataManager.consumeSharedData();
+      if (url != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          setState(() {
+            _sharedUrl = url;
+            _sharedCaption = caption;
+            _isFromShare = true;
+          });
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted && _sharedUrl != null) {
+              _showSaveLinkDialog();
+            }
+          });
+        });
+      }
+    }
   }
 
   @override
@@ -939,32 +1911,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _checkInitialSharedText();
       _refreshFolders(); // Refresh folders when app resumes
     }
   }
 
-  Future<void> _checkInitialSharedText() async {
-    try {
-      final String? value = await _shareChannel.invokeMethod<String>('getSharedText');
-      if (value == null || value.trim().isEmpty) return;
-      final parsed = _extractUrlAndCaption(value);
-      if (parsed.$1 != null && mounted) {
-        setState(() {
-          _sharedUrl = parsed.$1;
-          _sharedCaption = parsed.$2;
-          _isFromShare = true;
-        });
-        await _shareChannel.invokeMethod('clearSharedText');
-        _showSaveLinkDialog();
-      }
-    } catch (_) {}
-  }
 
-  void _listenForNewSharedText() {
-    // For simplicity, rely on activity relaunch bringing us to foreground,
-    // and re-check when page resumes via didChangeAppLifecycleState if needed.
-  }
 
   Future<void> _refreshFolders() async {
     try {
@@ -1214,12 +2165,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _showSaveLinkDialog() async {
     if (_sharedUrl == null) return;
 
-    // Refresh folders before showing dialog
-    await _refreshFolders();
+    // Ensure we're on the HomePage before showing dialog
+    if (!mounted) return;
+
+    // Refresh folders before showing dialog (with timeout)
+    try {
+      await _refreshFolders().timeout(const Duration(seconds: 3), onTimeout: () {
+        // Continue even if timeout
+      });
+    } catch (e) {
+      // Log error but proceed to show dialog
+      print('Error refreshing folders for share dialog: $e');
+    }
+
+    // Double-check mounted state before showing dialog
+    if (!mounted) return;
 
     return showDialog(
       context: context,
       barrierDismissible: false,
+      barrierColor: Colors.black54,
       builder: (context) {
         return AlertDialog(
           title: const Text(" Save Link"),
@@ -1264,34 +2229,125 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 16),
               ],
+              
+              const Text("Suggestions:", style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              FutureBuilder<List<FolderSuggestion>>(
+                future: () async {
+                  if (_sharedUrl == null) return <FolderSuggestion>[];
+
+                  // 1. Fetch Metadata
+                  final metadataFuture = MetadataService.fetchMetadata(_ensureHttpScheme(_sharedUrl!));
+
+                  // 2. Fetch History (All saved links in user's folders)
+                  final historyFuture = () async {
+                    try {
+                      if (_folders.isEmpty) return <Map<String, dynamic>>[];
+                      final folderIds = _folders.map((f) => f['id']).toList();
+                      final response = await supabase
+                          .from('saved_links')
+                          .select('title, folder_id, url')
+                          .filter('folder_id', 'in', folderIds);
+                      return List<Map<String, dynamic>>.from(response);
+                    } catch (e) {
+                      print('Error fetching history for suggestions: $e');
+                      return <Map<String, dynamic>>[];
+                    }
+                  }();
+
+                  final results = await Future.wait([metadataFuture, historyFuture]);
+                  final metadata = results[0] as LinkMetadata;
+                  final history = results[1] as List<Map<String, dynamic>>;
+                  
+                  return SuggestionService.suggestFolders(metadata, _folders, history);
+                }(),
+                builder: (context, snapshot) {
+                   if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                     return const SizedBox.shrink(); 
+                   }
+                   final suggestions = snapshot.data!;
+                   return Wrap(
+                     spacing: 8,
+                     runSpacing: 8,
+                     children: suggestions.map((suggestion) {
+                       return ActionChip(
+                          avatar: Icon(
+                            suggestion.isExisting ? Icons.folder : Icons.create_new_folder,
+                            size: 16,
+                            color: suggestion.isExisting ? const Color(0xFF6EC1FF) : const Color(0xFF8D6E63)
+                          ),
+                          label: Text(suggestion.name),
+                          tooltip: suggestion.reason,
+                          backgroundColor: Colors.grey[50],
+                          onPressed: () async {
+                              if (suggestion.isExisting) {
+                                // Find existing ID
+                                final folder = _folders.firstWhere((f) => f['name'] == suggestion.name);
+                                await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                              } else {
+                                // Create new folder
+                                final mappedUserId = await _getMappedUserId();
+                                if (mappedUserId != null) {
+                                  try {
+                                     final newFolder = await supabase
+                                      .from('folders')
+                                      .insert({'name': suggestion.name, 'user_id': mappedUserId})
+                                      .select()
+                                      .single();
+                                     await _saveLinkToFolder(newFolder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                                  } catch (e) {
+                                     print('Error auto-creating suggestion: $e');
+                                     return;
+                                  }
+                                }
+                              }
+                              // Close flow
+                              Navigator.pop(context);
+                              _sharedUrl = null;
+                              _sharedCaption = null;
+                              _isFromShare = false;
+                              try { const MethodChannel('share_receiver').invokeMethod('clearSharedText'); } catch (_) {}
+                              _closeApp();
+                          },
+                       );
+                     }).toList(),
+                   );
+                },
+              ),
+              const SizedBox(height: 16),
+
               const Text("Choose folder:",
                   style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              if (_folders.isEmpty)
-                const Text("No folders found. Create one first.",
-                    style: TextStyle(color: Colors.grey))
-              else
-                SizedBox(
-                  height: 320,
+              if (_folders.isEmpty) ...[
+                const Text("No folders found yet.", style: TextStyle(color: Colors.grey)),
+                const SizedBox(height: 8),
+                const Text("Tip: Create a folder to save your link into.", style: TextStyle(fontSize: 12, color: Colors.black54)),
+              ] else
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 360),
                   child: ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: _folders.length,
-                    itemBuilder: (context, index) {
-                      final folder = _folders[index];
-                      return ListTile(
-                        leading: const Icon(Icons.folder, color: Color(0xFFF08787)),
-                        title: Text(folder['name']),
-                        onTap: () async {
-                          await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
-                          Navigator.pop(context);
-                          _sharedUrl = null;
-                          _sharedCaption = null;
-                          _isFromShare = false;
-                          _closeApp();
-                        },
-                      );
-                    },
-                  ),
+                      shrinkWrap: true,
+                      itemCount: _folders.length,
+                      itemBuilder: (context, index) {
+                        final folder = _folders[index];
+                        return ListTile(
+                          leading: const Icon(Icons.folder, color: Color(0xFF6EC1FF)),
+                          title: Text(folder['name']),
+                          onTap: () async {
+                            await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                            Navigator.pop(context);
+                            _sharedUrl = null;
+                            _sharedCaption = null;
+                            _isFromShare = false;
+                            // Clear native shared text after user interaction
+                            try {
+                              const MethodChannel('share_receiver').invokeMethod('clearSharedText');
+                            } catch (_) {}
+                            _closeApp();
+                          },
+                        );
+                      }),
                 ),
               const Divider(),
               ListTile(
@@ -1310,11 +2366,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           actions: [
             TextButton(
               child: const Text("CANCEL"),
-              onPressed: () {
+              onPressed: () async {
                 Navigator.pop(context);
                 _sharedUrl = null;
                 _sharedCaption = null;
                 _isFromShare = false;
+                // Clear native shared text after user interaction
+                try {
+                  const MethodChannel('share_receiver').invokeMethod('clearSharedText');
+                } catch (_) {}
                 _closeApp();
               },
             ),
@@ -1394,6 +2454,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     _sharedUrl = null;
                     _sharedCaption = null;
                     _isFromShare = false;
+                    // Clear shared text only after user interaction
+                    try {
+                      const MethodChannel('share_receiver').invokeMethod('clearSharedText');
+                    } catch (_) {}
                     _closeApp();
                   } catch (e) {
                     print('Error creating folder and saving link: $e');
@@ -1409,6 +2473,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   String _ensureHttpScheme(String url) {
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    if (url.startsWith('www.')) return 'https://$url';
     return 'https://$url';
   }
 
@@ -1416,7 +2481,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// Returns a Dart record (url, caption).
   (String?, String?) _extractUrlAndCaption(String text) {
     try {
-      final RegExp urlRegex = RegExp(r'(https?:\/\/\S+)', caseSensitive: false);
+      // Regex to find URLs, including those starting with www.
+      final RegExp urlRegex = RegExp(
+        r'((https?:\/\/)|(www\.))[^\s]+',
+        caseSensitive: false,
+      );
       final match = urlRegex.firstMatch(text);
       if (match == null) return (null, null);
       final url = match.group(0);
@@ -1495,8 +2564,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     if (_isFromShare && _sharedUrl != null) {
       return Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Container(),
+        backgroundColor: Colors.black.withOpacity(0.5),
+        body: const Center(
+          child: SizedBox(
+            width: 48,
+            height: 48,
+            child: CircularProgressIndicator(),
+          ),
+        ),
       );
     }
 
@@ -1509,31 +2584,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('My Saved Folders', style: TextStyle(fontWeight: FontWeight.w700)),
+        title: const Text('My Saved Folders', style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
         actions: [
           IconButton(
             tooltip: 'Sign out',
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.logout, color: Colors.white),
             onPressed: () async {
               await ClerkAuth.of(context).signOut();
             },
           ),
         ],
         backgroundColor: Colors.transparent,
+        flexibleSpace: Container(decoration: const BoxDecoration(gradient: AppColors.primaryGradient)),
       ),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFFF08787),
-              Color(0xFFFFC7A7),
-              Color(0xFFFEE2AD),
-              Color(0xFFF8FAB4),
-            ],
-          ),
-        ),
+        color: AppColors.surface,
         child: SafeArea(
           child: Column(
             children: [
@@ -1545,27 +2610,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   decoration: InputDecoration(
                     hintText: 'Search folders...',
                     filled: true,
-                    fillColor: Colors.white.withOpacity(0.75),
-                    prefixIcon:
-                    const Icon(Icons.search, color: Colors.black54),
+                    fillColor: Colors.white,
+                    prefixIcon: const Icon(Icons.search, color: Colors.black54),
                     hintStyle: const TextStyle(color: Colors.black54),
-                    contentPadding: const EdgeInsets.symmetric(
-                        vertical: 14, horizontal: 12),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(999),
                       borderSide: const BorderSide(color: Colors.black12),
                     ),
                     enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(999),
                       borderSide: const BorderSide(color: Colors.black12),
                     ),
                     focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      borderSide:
-                      const BorderSide(color: Color(0xFFF08787)),
+                      borderRadius: BorderRadius.circular(999),
+                      borderSide: BorderSide(color: buildColorScheme(Brightness.light).primary),
                     ),
                   ),
-                  style: const TextStyle(color: Color(0xFF1F1F1F)),
+                  style: const TextStyle(color: AppColors.textPrimary),
                 ),
               ),
               Expanded(
@@ -1590,7 +2652,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       openElevation: 0,
                       transitionType: ContainerTransitionType.fadeThrough,
                       closedBuilder: (context, open) {
-                        return _FolderCard(
+                    return _FolderCard(
                           name: folder['name'],
                           onDelete: () => _showDeleteFolderDialog(
                               folder['id'], folder['name']),
@@ -1649,15 +2711,8 @@ class _FolderCard extends StatelessWidget {
       child: Ink(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(16),
-          color: Colors.white,
-          border: Border.all(color: const Color(0xFF6E8EF5).withOpacity(0.25)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.06),
-              blurRadius: 12,
-              offset: const Offset(0, 6),
-            ),
-          ],
+          color: AppColors.card,
+          boxShadow: AppColors.softShadow,
         ),
         child: Padding(
           padding: const EdgeInsets.all(14.0),
@@ -1668,11 +2723,7 @@ class _FolderCard extends StatelessWidget {
                 children: [
                   Container(
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF6E8EF5), Color(0xFF4FC3F7)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
+                      gradient: AppColors.primaryGradient,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     padding: const EdgeInsets.all(10),
@@ -1680,8 +2731,7 @@ class _FolderCard extends StatelessWidget {
                   ),
                   const Spacer(),
                   IconButton(
-                    icon:
-                    const Icon(Icons.delete_outline, color: Colors.black38),
+                    icon: const Icon(Icons.delete_outline, color: Colors.black38),
                     onPressed: onDelete,
                     tooltip: 'Delete',
                   ),
@@ -1693,7 +2743,7 @@ class _FolderCard extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                  color: Color(0xFF1F1F1F),
+                  color: AppColors.textPrimary,
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
                 ),
@@ -1852,31 +2902,12 @@ class _FolderViewPageState extends State<FolderViewPage> {
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
-        title: Text(widget.folderName, style: const TextStyle(fontWeight: FontWeight.w700)),
+        title: Text(widget.folderName, style: const TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
         elevation: 0,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF6E8EF5), Color(0xFF4FC3F7)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-        ),
+        flexibleSpace: Container(decoration: const BoxDecoration(gradient: AppColors.primaryGradient)),
       ),
       body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xFFF08787),
-              Color(0xFFFFC7A7),
-              Color(0xFFFEE2AD),
-              Color(0xFFF8FAB4),
-            ],
-          ),
-        ),
+        color: AppColors.surface,
         child: SafeArea(
           child: _links.isEmpty
               ? const _FolderEmptyState()
@@ -1896,17 +2927,9 @@ class _FolderViewPageState extends State<FolderViewPage> {
                 borderRadius: BorderRadius.circular(16),
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: AppColors.card,
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                        color: const Color(0xFF6E8EF5).withOpacity(0.25)),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.06),
-                        blurRadius: 10,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
+                    boxShadow: AppColors.softShadow,
                   ),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(minHeight: 76),
@@ -1916,7 +2939,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                         Container(
                           width: 6,
                           decoration: const BoxDecoration(
-                            color: Color(0xFF6E8EF5),
+                            color: AppColors.primaryBlue,
                             borderRadius: BorderRadius.only(
                               topLeft: Radius.circular(16),
                               bottomLeft: Radius.circular(16),
@@ -1954,7 +2977,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                         style: const TextStyle(
                                             fontSize: 15,
                                             fontWeight: FontWeight.w700,
-                                            color: Color(0xFF1F1F1F)),
+                                            color: AppColors.textPrimary),
                                       ),
                                       const SizedBox(height: 6),
                                       Row(
@@ -1970,7 +2993,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                                     horizontal: 8,
                                                     vertical: 4),
                                                 decoration: BoxDecoration(
-                                                  color: const Color(0xFF4FC3F7).withOpacity(0.25),
+                                                  color: AppColors.primaryBlue.withOpacity(0.20),
                                                   borderRadius:
                                                   BorderRadius
                                                       .circular(999),
@@ -1982,7 +3005,7 @@ class _FolderViewPageState extends State<FolderViewPage> {
                                                       .ellipsis,
                                                   style: const TextStyle(
                                                       fontSize: 11,
-                                                      color: Color(0xFF1F1F1F),
+                                                      color: AppColors.textPrimary,
                                                       fontWeight: FontWeight.w600),
                                                 ),
                                               ),

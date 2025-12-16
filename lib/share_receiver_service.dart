@@ -43,10 +43,11 @@ class ShareReceiverService {
   }
 
   void _showOverlayDialog() {
-    // Get the current overlay
-    final overlay = WidgetsBinding.instance.overlay;
-    if (overlay == null) return;
-
+    // Note: This service requires a BuildContext to show overlay
+    // For now, this method is not used as share handling is done in main.dart
+    // If needed, pass a BuildContext or use a GlobalKey<NavigatorState>
+    return;
+    
     _overlayEntry = OverlayEntry(
       builder: (context) => Material(
         color: Colors.black54,
@@ -81,7 +82,8 @@ class ShareReceiverService {
       ),
     );
 
-    overlay.insert(_overlayEntry!);
+    // Overlay insertion removed - this service is not actively used
+    // Share handling is done directly in main.dart
   }
 
   void dispose() {
