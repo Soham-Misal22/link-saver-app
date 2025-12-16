@@ -4,10 +4,12 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:async';
-import 'package:url_launcher/url_launcher.dart';
+import 'dart:async'; // Added for Timer
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as html_parser;
+import 'package:link_saver_app/widgets/icon_picker.dart';
+import 'package:share_plus/share_plus.dart'; 
+import 'package:url_launcher/url_launcher.dart';
 import 'package:animations/animations.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'theme/colors.dart';
@@ -1969,40 +1971,150 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _showAddFolderDialog() async {
     _textFieldController.clear();
+    String? selectedIconKey;
+
     return showDialog(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: const Text('Add a new folder'),
-          content: TextField(
-              controller: _textFieldController,
-              decoration: const InputDecoration(hintText: "Folder Name")),
-          actions: <Widget>[
-            TextButton(
-                child: const Text('CANCEL'),
-                onPressed: () => Navigator.pop(context)),
-            TextButton(
-              child: const Text('ADD'),
-              onPressed: () async {
-                final folderName = _textFieldController.text.trim();
-                final mappedUserId = await _getMappedUserId();
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Add a new folder'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                        controller: _textFieldController,
+                        decoration: const InputDecoration(hintText: "Folder Name")
+                    ),
+                    const SizedBox(height: 16),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text("Select Icon", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    ),
+                    const SizedBox(height: 8),
+                    IconPicker(
+                      initialIconKey: selectedIconKey,
+                      onIconSelected: (key) {
+                        setState(() {
+                          selectedIconKey = key;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                    child: const Text('CANCEL'),
+                    onPressed: () => Navigator.pop(context)),
+                TextButton(
+                  child: const Text('ADD'),
+                  onPressed: () async {
+                    final folderName = _textFieldController.text.trim();
+                    final mappedUserId = await _getMappedUserId();
 
-                if (folderName.isNotEmpty && mappedUserId != null) {
-                  try {
-                    print('Creating folder: $folderName for user: $mappedUserId');
-                    await supabase
-                        .from('folders')
-                        .insert({'name': folderName, 'user_id': mappedUserId});
-                    print('Folder created successfully');
-                    Navigator.pop(context);
-                    _refreshFolders();
-                  } catch (e) {
-                    print('Error adding folder: $e');
-                  }
-                }
-              },
-            ),
-          ],
+                    if (folderName.isNotEmpty && mappedUserId != null) {
+                      try {
+                        print('Creating folder: $folderName for user: $mappedUserId with icon: $selectedIconKey');
+                        await supabase
+                            .from('folders')
+                            .insert({
+                              'name': folderName, 
+                              'user_id': mappedUserId,
+                              'icon_key': selectedIconKey, // Save icon key
+                            });
+                        print('Folder created successfully');
+                        Navigator.pop(context);
+                        _refreshFolders();
+                      } catch (e) {
+                        print('Error adding folder: $e');
+                      }
+                    }
+                  },
+                ),
+              ],
+            );
+          }
+        );
+      },
+    );
+  }
+
+  Future<void> _showEditFolderDialog(Map<String, dynamic> folder) async {
+    _textFieldController.text = folder['name'] ?? '';
+    String? selectedIconKey = folder['icon_key'] as String?;
+
+    return showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text('Edit Folder', style: TextStyle(fontWeight: FontWeight.bold)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                     TextField(
+                        controller: _textFieldController,
+                        decoration: const InputDecoration(
+                          hintText: "Folder Name",
+                          labelText: "Name",
+                          border: OutlineInputBorder(),
+                        )
+                    ),
+                    const SizedBox(height: 16),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text("Select Icon", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    ),
+                    const SizedBox(height: 8),
+                    IconPicker(
+                      initialIconKey: selectedIconKey,
+                      onIconSelected: (key) {
+                        setState(() {
+                          selectedIconKey = key;
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                    child: const Text('CANCEL'),
+                    onPressed: () => Navigator.pop(context)),
+                TextButton(
+                  child: const Text('SAVE'),
+                  onPressed: () async {
+                    final folderName = _textFieldController.text.trim();
+                    
+                    if (folderName.isNotEmpty) {
+                      try {
+                        await supabase
+                            .from('folders')
+                            .update({
+                              'name': folderName, 
+                              'icon_key': selectedIconKey,
+                            })
+                            .eq('id', folder['id']); 
+                        
+                        Navigator.pop(context);
+                        _refreshFolders();
+                      } catch (e) {
+                        print('Error updating folder: $e');
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error updating folder: $e')),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ],
+            );
+          }
         );
       },
     );
@@ -2654,6 +2766,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       closedBuilder: (context, open) {
                     return _FolderCard(
                           name: folder['name'],
+                          iconKey: folder['icon_key'] as String?,
+                          onEdit: () => _showEditFolderDialog(folder),
                           onDelete: () => _showDeleteFolderDialog(
                               folder['id'], folder['name']),
                           onOpen: open,
@@ -2697,14 +2811,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
 class _FolderCard extends StatelessWidget {
   final String name;
+  final String? iconKey;
   final VoidCallback onDelete;
+  final VoidCallback onEdit;
   final VoidCallback onOpen;
 
   const _FolderCard(
-      {required this.name, required this.onDelete, required this.onOpen});
+      {required this.name, this.iconKey, required this.onDelete, required this.onEdit, required this.onOpen});
 
   @override
   Widget build(BuildContext context) {
+    // Resolve icon
+    final iconData = (iconKey != null && kFolderIcons.containsKey(iconKey)) 
+        ? kFolderIcons[iconKey]! 
+        : Icons.folder_open;
+
     return InkWell(
       onTap: onOpen,
       borderRadius: BorderRadius.circular(16),
@@ -2727,13 +2848,37 @@ class _FolderCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     padding: const EdgeInsets.all(10),
-                    child: const Icon(Icons.folder_open, color: Colors.white),
+                    child: Icon(iconData, color: Colors.white),
                   ),
                   const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.black38),
-                    onPressed: onDelete,
-                    tooltip: 'Delete',
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert, color: Colors.black38),
+                    onSelected: (value) {
+                      if (value == 'edit') onEdit();
+                      if (value == 'delete') onDelete();
+                    },
+                    itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                      const PopupMenuItem<String>(
+                        value: 'edit',
+                        child: Row(
+                          children: [
+                            Icon(Icons.edit, size: 20, color: Colors.black54),
+                            SizedBox(width: 8),
+                            Text('Edit'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem<String>(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete, size: 20, color: Colors.redAccent),
+                            SizedBox(width: 8),
+                            Text('Delete', style: TextStyle(color: Colors.redAccent)),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
