@@ -20,6 +20,7 @@ import 'services/suggestion_service.dart';
 import 'package:clerk_flutter/clerk_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart' show MethodChannel, SystemNavigator;
+import 'services/classification_service.dart';
 
 // ⚙️ Create a global Supabase client for easy access
 final supabase = Supabase.instance.client;
@@ -438,11 +439,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
   String? _newUsersSelection;
   String _userActivityRange = 'Last 7 Days';
 
-  @override
-  void initState() {
-    super.initState();
-    _loadAdminData();
-  }
+
+
+
 
   Future<void> _loadAdminData() async {
     try {
@@ -453,7 +452,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
       final usersF = supabase.from('user_mapping').select('clerk_user_id, created_at');
       final linksF = supabase.from('saved_links').select('id, url, title, created_at, user_id, folder_id').order('created_at', ascending: false);
-      final foldersF = supabase.from('folders').select('id, name, created_at, user_id');
+      final foldersF = supabase.from('folders').select('id, name, created_at, user_id, system_category');
       final recentLinksF = supabase.from('saved_links').select('id, url, title, created_at, user_id').order('created_at', ascending: false).limit(10);
       final activeLinksF = supabase.from('saved_links').select('user_id, created_at').gte('created_at', since24h);
       final activeFoldersF = supabase.from('folders').select('user_id, created_at').gte('created_at', since24h);
@@ -468,7 +467,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
         activeLinksF,
         activeFoldersF,
         newUsersF,
-      ]);
+      ]).timeout(const Duration(seconds: 15));
 
       final users = List<Map<String, dynamic>>.from(results[0] as List);
       final links = List<Map<String, dynamic>>.from(results[1] as List);
@@ -508,35 +507,63 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ..sort((a, b) => b.value.compareTo(a.value));
       final topSourcesList = topSources.take(7).map((e) => {'label': e.key, 'value': e.value}).toList();
 
-      // Popular folders: top 10 folders by number of saved links, aggregate the rest as "Other"
-      final folderIdToName = <int, String>{};
+      // Content Insights: System Category Aggregation
+      final folderIdToCategory = <int, String>{};
       for (final f in folders) {
         final id = (f['id'] as int);
-        folderIdToName[id] = (f['name'] ?? 'Untitled').toString();
-      }
-      final folderCounts = <int, int>{};
-      for (final l in links) {
-        final fid = l['folder_id'];
-        if (fid is int) {
-          folderCounts[fid] = (folderCounts[fid] ?? 0) + 1;
+        // Only use system_category, igore if null
+        final cat = f['system_category'] as String?;
+        if (cat != null && cat.isNotEmpty) {
+          folderIdToCategory[id] = cat;
         }
       }
-      final sortedFolders = folderCounts.entries.toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      final topTen = sortedFolders.take(10).toList();
-      final others = sortedFolders.skip(10).fold<int>(0, (sum, e) => sum + e.value);
-      final popularFoldersList = <Map<String, dynamic>>[
-        ...topTen.map((e) => {
-          'label': folderIdToName[e.key] ?? 'Folder ${e.key}',
-          'value': e.value,
-        })
-      ];
-      if (others > 0) {
-        popularFoldersList.add({'label': 'Other', 'value': others});
+
+      final categoryLinkCounts = <String, int>{};
+      final categoryUserSets = <String, Set<String>>{};
+
+      for (final l in links) {
+        final fid = l['folder_id'];
+        if (fid is int && folderIdToCategory.containsKey(fid)) {
+          final cat = folderIdToCategory[fid]!;
+          
+          // Link Count
+          categoryLinkCounts[cat] = (categoryLinkCounts[cat] ?? 0) + 1;
+          
+          // User Count (Unique)
+          final uid = (l['user_id'] ?? '').toString();
+          if (uid.isNotEmpty) {
+            categoryUserSets.putIfAbsent(cat, () => <String>{}).add(uid);
+          }
+        }
       }
+
+      final sortedCategories = categoryLinkCounts.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+
+      // Limit to top 8 + Other if needed, or just show all for the table?
+      // User asked for a table, so showing all valid categories is better unless huge.
+      // But pie chart needs to be readable. Let's keep top 5 for Chart, but Table shows all (or top 10).
+      
+      final insightsList = sortedCategories.map((e) {
+        final cat = e.key;
+        final count = e.value;
+        final users = categoryUserSets[cat]?.length ?? 0;
+        return {
+          'label': cat,
+          'value': count,
+          'users': users,
+        };
+      }).toList();
+
+      // For chart, we might want to aggregate small ones if too many
+      // But for now let's pass the full list and let the chart handle/truncate if needed or just show all.
+      // _popularFolders will now store this list.
+      final popularFoldersList = insightsList;
 
       // Recent saves
       final recent = recentLinks;
+
+
 
       // Store all user data for dynamic range filtering
       final allUsers = List<Map<String, dynamic>>.from(newUsers);
@@ -574,13 +601,31 @@ class _AdminDashboardState extends State<AdminDashboard> {
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
+      print('Load admin data error: $e');
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load dashboard: $e')),
+        );
+      }
     }
   }
 
   @override
+  void initState() {
+    super.initState();
+    _loadAdminData();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    if (_loading && _allUsersData.isEmpty) {
+       // Only show skeleton if we have no data at all
+       return Scaffold(
+         body: const _DashboardSkeleton(),
+       );
+    }
+    
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 64,
@@ -593,6 +638,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ),
         ),
         actions: [
+
           IconButton(
             tooltip: 'Sign out',
             icon: const Icon(Icons.logout, color: Colors.white),
@@ -654,6 +700,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           popularFolders: _popularFolders,
                           topSources: _topSources,
                           recentSaves: _recentSaves,
+                          totalLinks: _totalLinks,
+                          totalUsers: _totalUsers,
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -884,46 +932,43 @@ class _ContentInsightsSection extends StatelessWidget {
   final List<Map<String, dynamic>> popularFolders;
   final List<Map<String, dynamic>> topSources;
   final List<Map<String, dynamic>> recentSaves;
+  final int totalLinks;
+  final int totalUsers;
 
   const _ContentInsightsSection({
     required this.popularFolders,
     required this.topSources,
     required this.recentSaves,
+    required this.totalLinks,
+    required this.totalUsers,
   });
 
   @override
   Widget build(BuildContext context) {
-    final total = popularFolders.fold<int>(0, (sum, e) => sum + ((e['value'] ?? 0) as int));
-    final leading = popularFolders.isEmpty
-        ? null
-        : popularFolders.reduce((a, b) => ((a['value'] ?? 0) as int) >= ((b['value'] ?? 0) as int) ? a : b);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _PieChart(items: popularFolders),
-        if (leading != null) ...[
-          const SizedBox(height: 12),
-          Builder(
-            builder: (context) {
-              final leadingValue = (leading['value'] ?? 0) as int;
-              final percentage = total == 0 ? 0.0 : (leadingValue * 100.0) / total.toDouble();
-              final pctLabel = percentage.toStringAsFixed(percentage >= 10 ? 0 : 1);
-              return Text(
-                '${leading['label']} holds $pctLabel% of saves',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textMuted),
-              );
-            },
+        // 1. Chart (Donut)
+        Center(
+          child: SizedBox(
+            height: 240,
+            width: 240,
+            child: _PieChart(items: popularFolders, showLegend: false),
           ),
-        ],
-        const SizedBox(height: 24),
-        _TopSourcesChart(items: topSources),
-        const SizedBox(height: 24),
-        _RecentSavesList(items: recentSaves),
+        ),
+        const SizedBox(height: 32),
+        
+        // 2. Analytics Table
+        _InsightsTable(
+          items: popularFolders,
+          totalLinks: totalLinks,
+          totalUsers: totalUsers,
+        ),
       ],
     );
   }
 }
+
 
 class _TopSourcesChart extends StatelessWidget {
   final List<Map<String, dynamic>> items;
@@ -1623,7 +1668,8 @@ class _LineChartPainter extends CustomPainter {
 
 class _PieChart extends StatelessWidget {
   final List<Map<String, dynamic>> items;
-  const _PieChart({required this.items});
+  final bool showLegend;
+  const _PieChart({required this.items, this.showLegend = true});
 
   @override
   Widget build(BuildContext context) {
@@ -1654,8 +1700,26 @@ class _PieChart extends StatelessWidget {
       value: semanticsSummary,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final isWide = constraints.maxWidth > 520;
-          final legend = _buildLegend(items, colors, total, context);
+          final isWide = constraints.maxWidth > 520 && showLegend;
+          final legend = showLegend ? _buildLegend(items, colors, total, context) : const SizedBox.shrink();
+          
+          if (!showLegend) {
+             return SizedBox(
+                height: 220,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: 1),
+                  duration: const Duration(milliseconds: 600),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, value, child) {
+                    return CustomPaint(
+                      painter: _PiePainter(items: items, colors: colors, animationValue: value),
+                      child: const SizedBox.expand(),
+                    );
+                  },
+                ),
+              );
+          }
+
           return isWide
               ? Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -1711,6 +1775,7 @@ class _PieChart extends StatelessWidget {
     int total,
     BuildContext context,
   ) {
+    // ... existing implementation
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1718,29 +1783,29 @@ class _PieChart extends StatelessWidget {
           final entry = items[index];
           final label = (entry['label'] ?? '').toString();
           final value = (entry['value'] ?? 0) as int;
-          final pct = total == 0 ? 0.0 : (value * 100.0) / total.toDouble();
-          final pctLabel = pct.toStringAsFixed(pct >= 10 ? 0 : 1);
+          final percentage = total == 0 ? 0 : ((value / total) * 100).toStringAsFixed(1);
+          final color = colors[index % colors.length];
 
           return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
+            padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  height: 12,
                   width: 12,
+                  height: 12,
                   decoration: BoxDecoration(
-                    color: colors[index % colors.length],
+                    color: color,
                     borderRadius: BorderRadius.circular(4),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    '$label · $pctLabel%',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.textMuted,
-                        ),
-                  ),
+                const SizedBox(width: 8),
+                Text(
+                  '$label · $percentage%',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppColors.textMuted,
+                        fontWeight: FontWeight.w500,
+                      ),
                 ),
               ],
             ),
@@ -1750,6 +1815,97 @@ class _PieChart extends StatelessWidget {
     );
   }
 }
+
+class _InsightsTable extends StatelessWidget {
+  final List<Map<String, dynamic>> items;
+  final int totalLinks;
+  final int totalUsers;
+
+  const _InsightsTable({
+    required this.items,
+    required this.totalLinks,
+    required this.totalUsers,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // Header
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 4,
+                child: Text('Category', style: _headerStyle),
+              ),
+              Expanded(
+                flex: 3,
+                child: Text('Link Share', style: _headerStyle),
+              ),
+              Expanded(
+                flex: 3,
+                child: Text('Users', style: _headerStyle, textAlign: TextAlign.end),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1, color: AppColors.divider),
+        // Rows
+        ...items.map((item) {
+          final label = item['label'] as String;
+          final linkCount = item['value'] as int;
+          final userCount = item['users'] as int;
+
+          final linkSharePct = totalLinks > 0 ? ((linkCount / totalLinks) * 100).round() : 0;
+          final userSharePct = totalUsers > 0 ? ((userCount / totalUsers) * 100).round() : 0;
+
+          return Container(
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppColors.divider, width: 0.5)),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  flex: 4,
+                  child: Text(
+                    label, 
+                    style: const TextStyle(fontWeight: FontWeight.w500, color: AppColors.textPrimary)
+                  ),
+                ),
+                Expanded(
+                  flex: 3,
+                  child: Text(
+                    '$linkSharePct% ($linkCount)',
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+                  ),
+                ),
+                Expanded(
+                  flex: 3,
+                  child: Text(
+                    '$userSharePct% ($userCount)',
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+                    textAlign: TextAlign.end,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  static const _headerStyle = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    color: AppColors.textMuted,
+    letterSpacing: 0.5,
+  );
+}
+
 
 class _PiePainter extends CustomPainter {
   final List<Map<String, dynamic>> items;
@@ -1848,6 +2004,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _sharedCaption;
   final _sharedDataManager = SharedDataManager();
   int _foldersLoadAttempts = 0;
+
+  // Search State
+  List<Map<String, dynamic>> _matchedFolders = [];
+  List<Map<String, dynamic>> _matchedLinks = [];
+  bool _isSearching = false;
+  Timer? _debounce;
   
   Future<String?> _getMappedUserId() async {
     final clerkUser = ClerkAuth.of(context).user;
@@ -1881,6 +2043,75 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _refreshFolders();
     _checkForPendingShare(); // Check SharedDataManager for pending shares after auth
     WidgetsBinding.instance.addObserver(this);
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _searchController.removeListener(_onSearchChanged);
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        setState(() {
+          _query = _searchController.text.trim();
+        });
+        _performSearch(_query);
+      }
+    });
+  }
+
+  Future<void> _performSearch(String query) async {
+    if (query.isEmpty) {
+      if (mounted) setState(() {
+        _matchedFolders = [];
+        _matchedLinks = [];
+        _isSearching = false;
+      });
+      return;
+    }
+
+    if (mounted) setState(() => _isSearching = true);
+
+    try {
+      final mappedUserId = await _getMappedUserId();
+      if (mappedUserId == null) return;
+
+      // 1. Search Folders (Database-driven)
+      // Check for empty folders by joining with saved_links count or inner join
+      // We use !inner on saved_links to ensure at least one link exists.
+      // Note: This fetches one link ID per folder to verify existence.
+      final foldersData = await supabase
+          .from('folders')
+          .select('id, name, created_at, system_category, saved_links!inner(id)')
+          .ilike('name', '%$query%')
+          .eq('user_id', mappedUserId)
+          .limit(20);
+      
+      // 2. Search Links (Database-driven, global scope)
+      final linksData = await supabase
+          .from('saved_links')
+          .select('id, title, url, folder_id, created_at')
+          .ilike('title', '%$query%')
+          .eq('user_id', mappedUserId)
+          .limit(50);
+
+      if (mounted) {
+        setState(() {
+          _matchedFolders = List<Map<String, dynamic>>.from(foldersData);
+          _matchedLinks = List<Map<String, dynamic>>.from(linksData);
+          _isSearching = false;
+        });
+      }
+    } catch (e) {
+      print('Search error: $e');
+      if (mounted) setState(() => _isSearching = false);
+    }
   }
 
   // Check SharedDataManager for pending shares (after successful login)
@@ -1904,11 +2135,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
+
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -2687,13 +2914,212 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
     }
 
-    final filtered = _folders.where((f) {
-      if (_query.isEmpty) return true;
-      final name = (f['name'] ?? '').toString();
-      return name.toLowerCase().contains(_query.toLowerCase());
-    }).toList();
+      if (_query.isNotEmpty) {
+      return Scaffold(
+        extendBodyBehindAppBar: true,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          toolbarHeight: 0, // Hide default AppBar space since we have custom header
+          systemOverlayStyle: SystemUiOverlayStyle.light,
+        ),
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: AppColors.primaryGradient,
+          ),
+          child: SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                // Custom AppBar / Search Header
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Row(
+                    children: [
+                      // Search Bar
+                      Expanded(
+                        child: Container(
+                          height: 48,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(24),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: TextField(
+                            controller: _searchController,
+                            style: const TextStyle(color: Colors.black87),
+                            decoration: InputDecoration(
+                              hintText: 'Search...',
+                              hintStyle: const TextStyle(color: Colors.black38),
+                              prefixIcon: const Icon(Icons.search, color: Colors.black38),
+                              suffixIcon: IconButton(
+                                icon: const Icon(Icons.close, color: Colors.black38),
+                                onPressed: () {
+                                  _searchController.clear();
+                                  FocusScope.of(context).unfocus();
+                                },
+                              ),
+                              border: InputBorder.none,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // Results Body
+                Expanded(
+                  child: _isSearching
+                      ? const Center(child: CircularProgressIndicator(color: Colors.white))
+                      : Container(
+                          width: double.infinity,
+                          decoration: const BoxDecoration(
+                            color: AppColors.surface,
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(24),
+                              topRight: Radius.circular(24),
+                            ),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: const BorderRadius.only(
+                              topLeft: Radius.circular(24),
+                              topRight: Radius.circular(24),
+                            ),
+                            child: ListView(
+                              padding: const EdgeInsets.all(16),
+                              children: [
+                                // 1. FOLDERS SECTION
+                                if (_matchedFolders.isNotEmpty) ...[
+                                  const Padding(
+                                    padding: EdgeInsets.only(bottom: 12),
+                                    child: Text('FOLDERS', style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: AppColors.textMuted,
+                                      fontSize: 12,
+                                      letterSpacing: 1.0,
+                                    )),
+                                  ),
+                                  ..._matchedFolders.map((folder) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Material(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: ListTile(
+                                        leading: const Icon(Icons.folder, color: Color(0xFF6E8EF5), size: 28),
+                                        title: Text(folder['name'], style: const TextStyle(fontWeight: FontWeight.w600)),
+                                        trailing: const Icon(Icons.chevron_right, color: Colors.black26),
+                                        dense: true,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                        onTap: () {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => FolderViewPage(
+                                                folderId: folder['id'],
+                                                folderName: folder['name'],
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  )),
+                                  const SizedBox(height: 24),
+                                ],
 
-    return Scaffold(
+                                // 2. LINKS SECTION
+                                if (_matchedLinks.isNotEmpty) ...[
+                                  const Padding(
+                                    padding: EdgeInsets.only(bottom: 12),
+                                    child: Text('SAVED LINKS', style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: AppColors.textMuted,
+                                      fontSize: 12,
+                                      letterSpacing: 1.0,
+                                    )),
+                                  ),
+                                  ..._matchedLinks.map((link) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Material(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: ListTile(
+                                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                                        leading: Container(
+                                          width: 40,
+                                          height: 40,
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey[100],
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: const Icon(Icons.link, color: Colors.black45), 
+                                        ),
+                                        title: Text(
+                                          link['title'] ?? link['url'],
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w500,
+                                            height: 1.2,
+                                          ),
+                                        ),
+                                        dense: true,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                        onTap: () async {
+                                          try {
+                                            final uri = Uri.parse(link['url']);
+                                            if (await canLaunchUrl(uri)) {
+                                              await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                            }
+                                          } catch (e) {
+                                            print('Error launching: $e');
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  )),
+                                ] else if (_matchedFolders.isEmpty) ...[
+                                  // No results state
+                                  const Padding(
+                                    padding: EdgeInsets.only(top: 48),
+                                    child: Center(
+                                      child: Column(
+                                        children: [
+                                          Icon(Icons.search_off, size: 48, color: Colors.black26),
+                                          SizedBox(height: 16),
+                                          Text('No results found', 
+                                            style: TextStyle(color: Colors.black45, fontWeight: FontWeight.w500)
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // Default Home View (Grid)
+    
+  final filtered = _folders; // No local filtering
+  
+  return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: const Text('My Saved Folders', style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white)),
