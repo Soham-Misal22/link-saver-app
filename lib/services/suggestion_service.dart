@@ -1,3 +1,6 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../services/metadata_service.dart';
 
 class FolderSuggestion {
@@ -12,7 +15,68 @@ class FolderSuggestion {
   });
 }
 
+
+
 class SuggestionService {
+  
+  static Future<String> _getDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    var deviceId = prefs.getString('debug_device_id');
+    if (deviceId == null) {
+      deviceId = const Uuid().v4();
+      await prefs.setString('debug_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
+  static Future<void> logDebugEvent(String stage, Map<String, dynamic> payload) async {
+    try {
+      final deviceId = await _getDeviceId();
+      await Supabase.instance.client.from('debug_events').insert({
+        'device_id': deviceId,
+        'stage': stage,
+        'payload': payload,
+      });
+    } catch (e) {
+      print('Failed to log debug event: $e');
+    }
+  }
+
+  static Future<List<String>> fetchAiSuggestions(String caption) async {
+      if (caption.trim().isEmpty) return [];
+
+      print("Calling suggest-folders with caption: $caption");
+      
+      await logDebugEvent('flutter_calling_backend', {'caption': caption});
+
+      try {
+        final deviceId = await _getDeviceId();
+        final response = await Supabase.instance.client.functions.invoke('suggest-folders', body: {
+            'caption': caption,
+            'device_id': deviceId,
+        });
+        final result = response.data;
+        print("suggest-folders returned: $result");
+        
+        await logDebugEvent('flutter_received_response', {'response': result});
+
+        final data = result;
+        
+        if (data != null) {
+          if (data['error'] != null) {
+             print('LinkSaver: Backend returned error: ${data['error']}');
+          }
+          if (data['suggestions'] != null) {
+            return List<String>.from(data['suggestions']);
+          }
+        }
+        return [];
+      } catch (e) {
+        print("suggest-folders error: $e");
+        await logDebugEvent('flutter_error', {'error': e.toString()});
+        return [];
+      }
+  }
   
   // 1. Common Presets "Starter Kit" for New Users
   static final Map<String, List<String>> _commonPresets = {

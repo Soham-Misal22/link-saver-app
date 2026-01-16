@@ -28,47 +28,15 @@ class MainActivity: FlutterActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        handleIntent(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleIntent(intent)
-    }
-
-    private fun handleIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_SEND) {
-            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
-            val sharedSubject = intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: ""
-            
-            // Combine subject and text to ensure we catch the URL wherever it is
-            val combined = "$sharedSubject $sharedText".trim()
-            
-            if (combined.isNotEmpty()) {
-                println("Link Saver Native: Received shared text: $combined")
-
-                // Store the shared text
-                setSharedText(combined)
-            }
-        }
-    }
+    // Intent handling moved to ShareReceiverActivity
+    // MainActivity only needs to provide data via MethodChannel
 
     private fun getSharedText(): String? {
         return getSharedPreferences("shared_data", MODE_PRIVATE)
             .getString("shared_text", null)
     }
 
-    private fun setSharedText(text: String) {
-        getSharedPreferences("shared_data", MODE_PRIVATE)
-            .edit()
-            .putString("shared_text", text)
-            .apply()
-            
-        // Push to Flutter if engine is ready
-        methodChannel?.invokeMethod("onSharedTextReceived", text)
-    }
+
 
     private fun clearSharedText() {
         getSharedPreferences("shared_data", MODE_PRIVATE)

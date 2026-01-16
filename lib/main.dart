@@ -34,6 +34,11 @@ class SharedDataManager {
   String? pendingUrl;
   String? pendingCaption;
   bool hasPendingData = false;
+  
+  (String?, String?)? get pendingData {
+    if (!hasPendingData) return null;
+    return (pendingUrl, pendingCaption);
+  }
 
   void setSharedData(String url, String? caption) {
     pendingUrl = url;
@@ -79,6 +84,7 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   static const MethodChannel _shareChannel = MethodChannel('share_receiver');
   final _sharedDataManager = SharedDataManager();
+  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -98,30 +104,45 @@ class _MyAppState extends State<MyApp> {
     if (call.method == 'onSharedTextReceived') {
       final String? text = call.arguments as String?;
       if (text != null) {
-        _processSharedText(text);
+        await _processSharedText(text);
       }
+      return null;
     }
+    throw MissingPluginException();
   }
 
   Future<void> _checkInitialSharedText() async {
     try {
+      print('[DEBUG] Checking initial shared text via MethodChannel');
       final String? value = await _shareChannel.invokeMethod<String>('getSharedText');
+      print('[DEBUG] Got shared text from native: "$value"');
       if (value != null && value.trim().isNotEmpty) {
-        _processSharedText(value);
+        await _processSharedText(value);
+      } else {
+        print('[DEBUG] No shared text found or empty');
       }
     } catch (e) {
-      print('Error checking shared text: $e');
+      print('[DEBUG ERROR] Error checking shared text: $e');
     }
   }
 
-  void _processSharedText(String value) {
+  Future<void> _processSharedText(String value) async {
+    print('[DEBUG] Processing shared text: "$value"');
+    // 1️⃣ Store raw or parsed value immediately. Logic is deferred to UI.
     final parsed = _extractUrlAndCaption(value);
-    final urlToUse = parsed.$1 ?? value;
-    final captionToUse = parsed.$2;
+    print('[DEBUG] Extracted URL: "${parsed.$1}", Caption: "${parsed.$2}"');
+    _sharedDataManager.setSharedData(parsed.$1 ?? value, parsed.$2);
+    print('[DEBUG] Stored in SharedDataManager. HasPending: ${_sharedDataManager.hasPendingData}');
     
-    // Store in SharedDataManager for later use
-    _sharedDataManager.setSharedData(urlToUse, captionToUse);
-    print('LinkSaver: Shared data stored: $urlToUse');
+    print('LinkSaver: Shared data stored: ${parsed.$1}');
+
+    // 2️⃣ Clear the shared intent on native side so we don't process it again
+    try {
+      await _shareChannel.invokeMethod('clearSharedText');
+      print('[DEBUG] Cleared native SharedPreferences');
+    } catch (e) {
+      print('[DEBUG ERROR] Error clearing shared text: $e');
+    }
   }
 
   (String?, String?) _extractUrlAndCaption(String text) {
@@ -152,6 +173,10 @@ class _MyAppState extends State<MyApp> {
       ),
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
+        navigatorKey: navigatorKey,
+        routes: {
+          '/login': (context) => const AuthGate(),
+        },
         title: 'Link Saver',
         theme: ThemeData(
           useMaterial3: true,
@@ -2041,8 +2066,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _refreshFolders();
-    _checkForPendingShare(); // Check SharedDataManager for pending shares after auth
     WidgetsBinding.instance.addObserver(this);
+    
+    // Check for pending share AFTER frame builds
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+       _checkForPendingShare();
+    });
+    
     _searchController.addListener(_onSearchChanged);
   }
 
@@ -2083,9 +2113,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mappedUserId == null) return;
 
       // 1. Search Folders (Database-driven)
-      // Check for empty folders by joining with saved_links count or inner join
-      // We use !inner on saved_links to ensure at least one link exists.
-      // Note: This fetches one link ID per folder to verify existence.
       final foldersData = await supabase
           .from('folders')
           .select('id, name, created_at, system_category, saved_links!inner(id)')
@@ -2114,33 +2141,317 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  // Check SharedDataManager for pending shares (after successful login)
   void _checkForPendingShare() {
-    if (_sharedDataManager.hasPendingData) {
-      final (url, caption) = _sharedDataManager.consumeSharedData();
+    print('[DEBUG HomePage] Checking for pending share...');
+    final pending = _sharedDataManager.pendingData;
+    print('[DEBUG HomePage] Pending data: $pending');
+    if (pending != null && mounted) {
+      final (url, caption) = pending;
+      print('[DEBUG HomePage] Got URL: "$url", Caption: "$caption"');
       if (url != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          setState(() {
-            _sharedUrl = url;
-            _sharedCaption = caption;
-            _isFromShare = true;
-          });
-          Future.delayed(const Duration(milliseconds: 300), () {
-            if (mounted && _sharedUrl != null) {
-              _showSaveLinkDialog();
-            }
-          });
+        // Robust delay to ensure UI is ready (addresses black screen/invisible dialog)
+        Future.delayed(const Duration(milliseconds: 600), () {
+           if (!mounted) return;
+           
+           print('[DEBUG HomePage] Showing Save Dialog for $url');
+           print('LinkSaver: Showing Save Dialog for $url');
+           // Pass data directly to dialog instead of relying on state
+           _showSaveLinkDialog(url: url, caption: caption);
+           
+           // Clear data
+           _sharedDataManager.clearSharedData();
+           print('[DEBUG HomePage] Cleared SharedDataManager');
         });
+      } else {
+        print('[DEBUG HomePage] URL is null, not showing dialog');
       }
+    } else {
+      print('[DEBUG HomePage] No pending data or not mounted (pending: $pending, mounted: $mounted)');
     }
   }
 
+  Future<void> _showSaveLinkDialog({String? url, String? caption}) async {
+    print('[DEBUG Dialog] Called with URL: "$url", Caption: "$caption"');
+    
+    if (url == null) {
+      print('[DEBUG Dialog] URL is null, returning without showing dialog');
+      return;
+    }
+    if (!mounted) {
+      print('[DEBUG Dialog] Widget not mounted, returning');
+      return;
+    }
 
+    _refreshFolders();
+    if (!mounted) return;
 
+    await showDialog(
+      context: context,
+      useRootNavigator: true, 
+      barrierDismissible: false,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text(" Save Link"),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(dialogContext).size.height * 0.75,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  url,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              const SizedBox(height: 16),
+              if ((caption ?? '').trim().isNotEmpty) ...[
+                const Text("Caption:", style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    caption!,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+              
+              const Text("Suggestions:", style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              FutureBuilder<List<FolderSuggestion>>(
+                future: () async {
+                  if (url == null) return <FolderSuggestion>[];
+
+                  // 1. Fetch AI Suggestions
+                  var promptText = caption ?? '';
+                  if (promptText.trim().isEmpty) {
+                     try {
+                        final meta = await MetadataService.fetchMetadata(_ensureHttpScheme(url));
+                        promptText = meta.title ?? '';
+                     } catch (e) {
+                        print('Error fetching metadata for AI fallback: $e');
+                     }
+                  }
+
+                  if (promptText.trim().isEmpty) return <FolderSuggestion>[];
+
+                  final aiSuggestions = await SuggestionService.fetchAiSuggestions(promptText);
+                  
+                  final suggestions = <FolderSuggestion>[];
+                  for (final name in aiSuggestions) {
+                    final normalizedName = name.trim().toLowerCase();
+                    final existing = _folders.firstWhere(
+                      (f) => (f['name'] as String).trim().toLowerCase() == normalizedName,
+                      orElse: () => {},
+                    );
+                    
+                    suggestions.add(FolderSuggestion(
+                      name: existing.isNotEmpty ? existing['name'] : name,
+                      isExisting: existing.isNotEmpty,
+                      reason: existing.isNotEmpty ? 'Deep match' : 'AI Recommendation',
+                    ));
+                  }
+                  return suggestions;
+                }(),
+                builder: (context, snapshot) {
+                   if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                     return const SizedBox.shrink(); 
+                   }
+                   final suggestions = snapshot.data!;
+
+                   print("Suggestions in UI: $suggestions");
+                   SuggestionService.logDebugEvent('ui_render', {'suggestions': suggestions.map((e) => e.name).toList()});
+                   return Column(
+                     crossAxisAlignment: CrossAxisAlignment.start,
+                     children: [
+                       const Text("Recommended:", style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF6E8EF5))),
+                       const SizedBox(height: 8),
+                       Wrap(
+                         spacing: 8,
+                         runSpacing: 8,
+                         children: suggestions.map((suggestion) {
+                           return ActionChip(
+                               avatar: Icon(
+                                 suggestion.isExisting ? Icons.folder : Icons.auto_awesome,
+                                 size: 16,
+                                 color: suggestion.isExisting ? const Color(0xFF6EC1FF) : const Color(0xFFFFC107)
+                               ),
+                               label: Text(suggestion.name),
+                               tooltip: suggestion.reason,
+                               backgroundColor: Colors.blue.withOpacity(0.05),
+                               side: BorderSide.none,
+                               onPressed: () async {
+                                   if (suggestion.isExisting) {
+                                     final normalized = suggestion.name.trim().toLowerCase();
+                                     final folder = _folders.firstWhere(
+                                       (f) => (f['name'] as String).trim().toLowerCase() == normalized,
+                                       orElse: () => {},
+                                     );
+                                     if (folder.isNotEmpty) {
+                                        await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                                     }
+                                   } else {
+                                     final mappedUserId = await _getMappedUserId();
+                                     if (mappedUserId != null) {
+                                       try {
+                                          final newFolder = await supabase
+                                           .from('folders')
+                                           .insert({'name': suggestion.name, 'user_id': mappedUserId})
+                                           .select()
+                                           .single();
+                                          await _saveLinkToFolder(newFolder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                                       } catch (e) {
+                                          print('Error auto-creating suggestion: $e');
+                                          return;
+                                       }
+                                     }
+                                   }
+                                   Navigator.pop(context);
+                                   _sharedUrl = null;
+                                   _sharedCaption = null;
+                                   _isFromShare = false;
+                                   try { const MethodChannel('share_receiver').invokeMethod('clearSharedText'); } catch (_) {}
+                                   _closeApp();
+                               },
+                            );
+                         }).toList(),
+                       ),
+                       const SizedBox(height: 16),
+                       const Divider(), 
+                       const SizedBox(height: 8),
+                     ],
+                   );
+                },
+              ),
+              
+              const Text("All Folders:", style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              FutureBuilder<List<Map<String, dynamic>>>(
+                future: () async {
+                  try {
+                    final mappedUserId = await _getMappedUserId();
+                    if (mappedUserId == null) return <Map<String, dynamic>>[];
+                    
+                    final idCandidates = await _getUserIdCandidates();
+                    final data = await supabase
+                        .from('folders')
+                        .select()
+                        .inFilter('user_id', idCandidates);
+                        
+                    final list = List<Map<String, dynamic>>.from(data);
+                    list.sort((a, b) {
+                      final at = _parseCreatedAtFlexible(a['created_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
+                      final bt = _parseCreatedAtFlexible(b['created_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
+                      return bt.compareTo(at);
+                    });
+                    return list;
+                  } catch (e) {
+                    print('Error fetching folders in dialog: $e');
+                    return <Map<String, dynamic>>[];
+                  }
+                }(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                     return const Center(child: Padding(padding: EdgeInsets.all(8.0), child: CircularProgressIndicator()));
+                  }
+                  
+                  final folders = snapshot.data ?? [];
+                  
+                  if (folders.isEmpty) {
+                    return Column(
+                      children: const [
+                        Text("No folders found yet.", style: TextStyle(color: Colors.grey)),
+                        SizedBox(height: 8),
+                        Text("Tip: Create a folder to save your link into.", style: TextStyle(fontSize: 12, color: Colors.black54)),
+                      ],
+                    );
+                  }
+
+                  return SizedBox(
+                    height: 360,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        children: folders.map((folder) {
+                          return ListTile(
+                            leading: const Icon(Icons.folder, color: Color(0xFF6EC1FF)),
+                            title: Text(folder['name']),
+                            onTap: () async {
+                              await _saveLinkToFolder(folder['id'], url, overrideTitle: caption);
+                              if (!mounted) return;
+                              Navigator.pop(context);
+                              
+                              _sharedUrl = null;
+                              _sharedCaption = null;
+                              _isFromShare = false;
+                              try {
+                                const MethodChannel('share_receiver').invokeMethod('clearSharedText');
+                              } catch (_) {}
+                              
+                              // Redirect to source app
+                              _closeApp();
+                            },
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.create_new_folder, color: Color(0xFF8D6E63)),
+                title: const Text("Create New Folder"),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showCreateFolderWhileSharingDialog();
+                },
+              ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              child: const Text("CANCEL"),
+              onPressed: () async {
+                Navigator.pop(context);
+                _sharedUrl = null;
+                _sharedCaption = null;
+                _isFromShare = false;
+                try {
+                  const MethodChannel('share_receiver').invokeMethod('clearSharedText');
+                } catch (_) {}
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _refreshFolders(); // Refresh folders when app resumes
+      _checkForPendingShare(); // Check for pending shares on resume
     }
   }
 
@@ -2501,227 +2812,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _showSaveLinkDialog() async {
-    if (_sharedUrl == null) return;
-
-    // Ensure we're on the HomePage before showing dialog
-    if (!mounted) return;
-
-    // Refresh folders before showing dialog (with timeout)
-    try {
-      await _refreshFolders().timeout(const Duration(seconds: 3), onTimeout: () {
-        // Continue even if timeout
-      });
-    } catch (e) {
-      // Log error but proceed to show dialog
-      print('Error refreshing folders for share dialog: $e');
-    }
-
-    // Double-check mounted state before showing dialog
-    if (!mounted) return;
-
-    return showDialog(
-      context: context,
-      barrierDismissible: false,
-      barrierColor: Colors.black54,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text(" Save Link"),
-          content: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.75,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _sharedUrl!,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
-                ),
-              ),
-              const SizedBox(height: 16),
-              if ((_sharedCaption ?? '').trim().isNotEmpty) ...[
-                const Text("Caption:", style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    _sharedCaption!,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
-              
-              const Text("Suggestions:", style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              FutureBuilder<List<FolderSuggestion>>(
-                future: () async {
-                  if (_sharedUrl == null) return <FolderSuggestion>[];
-
-                  // 1. Fetch Metadata
-                  final metadataFuture = MetadataService.fetchMetadata(_ensureHttpScheme(_sharedUrl!));
-
-                  // 2. Fetch History (All saved links in user's folders)
-                  final historyFuture = () async {
-                    try {
-                      if (_folders.isEmpty) return <Map<String, dynamic>>[];
-                      final folderIds = _folders.map((f) => f['id']).toList();
-                      final response = await supabase
-                          .from('saved_links')
-                          .select('title, folder_id, url')
-                          .filter('folder_id', 'in', folderIds);
-                      return List<Map<String, dynamic>>.from(response);
-                    } catch (e) {
-                      print('Error fetching history for suggestions: $e');
-                      return <Map<String, dynamic>>[];
-                    }
-                  }();
-
-                  final results = await Future.wait([metadataFuture, historyFuture]);
-                  final metadata = results[0] as LinkMetadata;
-                  final history = results[1] as List<Map<String, dynamic>>;
-                  
-                  return SuggestionService.suggestFolders(metadata, _folders, history);
-                }(),
-                builder: (context, snapshot) {
-                   if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                     return const SizedBox.shrink(); 
-                   }
-                   final suggestions = snapshot.data!;
-                   return Wrap(
-                     spacing: 8,
-                     runSpacing: 8,
-                     children: suggestions.map((suggestion) {
-                       return ActionChip(
-                          avatar: Icon(
-                            suggestion.isExisting ? Icons.folder : Icons.create_new_folder,
-                            size: 16,
-                            color: suggestion.isExisting ? const Color(0xFF6EC1FF) : const Color(0xFF8D6E63)
-                          ),
-                          label: Text(suggestion.name),
-                          tooltip: suggestion.reason,
-                          backgroundColor: Colors.grey[50],
-                          onPressed: () async {
-                              if (suggestion.isExisting) {
-                                // Find existing ID
-                                final folder = _folders.firstWhere((f) => f['name'] == suggestion.name);
-                                await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
-                              } else {
-                                // Create new folder
-                                final mappedUserId = await _getMappedUserId();
-                                if (mappedUserId != null) {
-                                  try {
-                                     final newFolder = await supabase
-                                      .from('folders')
-                                      .insert({'name': suggestion.name, 'user_id': mappedUserId})
-                                      .select()
-                                      .single();
-                                     await _saveLinkToFolder(newFolder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
-                                  } catch (e) {
-                                     print('Error auto-creating suggestion: $e');
-                                     return;
-                                  }
-                                }
-                              }
-                              // Close flow
-                              Navigator.pop(context);
-                              _sharedUrl = null;
-                              _sharedCaption = null;
-                              _isFromShare = false;
-                              try { const MethodChannel('share_receiver').invokeMethod('clearSharedText'); } catch (_) {}
-                              _closeApp();
-                          },
-                       );
-                     }).toList(),
-                   );
-                },
-              ),
-              const SizedBox(height: 16),
-
-              const Text("Choose folder:",
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              if (_folders.isEmpty) ...[
-                const Text("No folders found yet.", style: TextStyle(color: Colors.grey)),
-                const SizedBox(height: 8),
-                const Text("Tip: Create a folder to save your link into.", style: TextStyle(fontSize: 12, color: Colors.black54)),
-              ] else
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 360),
-                  child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: _folders.length,
-                      itemBuilder: (context, index) {
-                        final folder = _folders[index];
-                        return ListTile(
-                          leading: const Icon(Icons.folder, color: Color(0xFF6EC1FF)),
-                          title: Text(folder['name']),
-                          onTap: () async {
-                            await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
-                            Navigator.pop(context);
-                            _sharedUrl = null;
-                            _sharedCaption = null;
-                            _isFromShare = false;
-                            // Clear native shared text after user interaction
-                            try {
-                              const MethodChannel('share_receiver').invokeMethod('clearSharedText');
-                            } catch (_) {}
-                            _closeApp();
-                          },
-                        );
-                      }),
-                ),
-              const Divider(),
-              ListTile(
-                leading: const Icon(Icons.create_new_folder,
-                    color: Color(0xFF8D6E63)),
-                title: const Text("Create New Folder"),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showCreateFolderWhileSharingDialog();
-                },
-              ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              child: const Text("CANCEL"),
-              onPressed: () async {
-                Navigator.pop(context);
-                _sharedUrl = null;
-                _sharedCaption = null;
-                _isFromShare = false;
-                // Clear native shared text after user interaction
-                try {
-                  const MethodChannel('share_receiver').invokeMethod('clearSharedText');
-                } catch (_) {}
-                _closeApp();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
 
   void _closeApp() {
     SystemNavigator.pop();
