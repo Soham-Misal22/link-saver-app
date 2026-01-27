@@ -2,6 +2,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../services/metadata_service.dart';
+import '../utils/logger.dart';
 
 class FolderSuggestion {
   final String name;
@@ -38,14 +39,14 @@ class SuggestionService {
         'payload': payload,
       });
     } catch (e) {
-      print('Failed to log debug event: $e');
+      AppLogger.error('Failed to log debug event', error: e, tag: 'Debug');
     }
   }
 
   static Future<List<String>> fetchAiSuggestions(String caption) async {
       if (caption.trim().isEmpty) return [];
 
-      print("Calling suggest-folders with caption: $caption");
+      AppLogger.debug('Calling suggest-folders with caption: $caption', 'AI');
       
       await logDebugEvent('flutter_calling_backend', {'caption': caption});
 
@@ -56,7 +57,7 @@ class SuggestionService {
             'device_id': deviceId,
         });
         final result = response.data;
-        print("suggest-folders returned: $result");
+        AppLogger.debug('suggest-folders returned: $result', 'AI');
         
         await logDebugEvent('flutter_received_response', {'response': result});
 
@@ -64,7 +65,7 @@ class SuggestionService {
         
         if (data != null) {
           if (data['error'] != null) {
-             print('LinkSaver: Backend returned error: ${data['error']}');
+             AppLogger.warning('Backend returned error: ${data['error']}', 'AI');
           }
           if (data['suggestions'] != null) {
             return List<String>.from(data['suggestions']);
@@ -72,7 +73,7 @@ class SuggestionService {
         }
         return [];
       } catch (e) {
-        print("suggest-folders error: $e");
+        AppLogger.error('AI suggestion failed', error: e, tag: 'AI');
         await logDebugEvent('flutter_error', {'error': e.toString()});
         return [];
       }

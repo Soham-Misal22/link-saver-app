@@ -23,10 +23,12 @@ class MetadataService {
   static Future<LinkMetadata> fetchMetadata(String url) async {
     try {
       final uri = Uri.parse(url);
-      final response = await http.get(uri);
+      final response = await http
+          .get(uri)
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode != 200) {
-        throw Exception('Failed to load page');
+        throw Exception('Failed to load page: HTTP ${response.statusCode}');
       }
 
       final document = html_parser.parse(response.body);

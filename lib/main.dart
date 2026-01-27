@@ -21,6 +21,10 @@ import 'package:clerk_flutter/clerk_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart' show MethodChannel, SystemNavigator;
 import 'services/classification_service.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'utils/error_handler.dart';
+import 'utils/validators.dart';
+import 'utils/logger.dart';
 
 // ⚙️ Create a global Supabase client for easy access
 final supabase = Supabase.instance.client;
@@ -65,10 +69,13 @@ class SharedDataManager {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Initialize Supabase
+  // Load environment variables
+  await dotenv.load(fileName: ".env");
+  
+  // Initialize Supabase with environment variables
   await Supabase.initialize(
-    url: 'https://odmfqhaosvvscbgcghie.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9kbWZxaGFvc3Z2c2NiZ2NnaGllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAwNDI3MTIsImV4cCI6MjA3NTYxODcxMn0.vSVWiruqXCGNkUieO-j1noWE4K8KzTUOLEfSAPP-sUk',
+    url: dotenv.env['SUPABASE_URL']!,
+    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
   );
   
   runApp(const MyApp());
@@ -217,27 +224,106 @@ class _MyAppState extends State<MyApp> {
 // ... THE REST OF THE CODE IS EXACTLY THE SAME AS THE PREVIOUS VERSION ...
 // I am including it all below so you can copy and paste the entire file.
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
   @override
   Widget build(BuildContext context) {
     return ClerkAuthBuilder(
       signedInBuilder: (context, authState) {
         final user = authState.user;
-        final email = user?.emailAddresses?.isNotEmpty == true 
-            ? user!.emailAddresses!.first.emailAddress 
-            : '';
-        final isAdmin = email.trim().toLowerCase() == 'sohammisal22@gmail.com';
-
-        final Widget dest = isAdmin ? const AdminDashboard() : const HomePage();
-        return _EnsureUserMapping(child: dest);
+        if (user == null) {
+          return const _SignedOutGate();
+        }
+        
+        return _AdminCheckWrapper(
+          userId: user.id,
+        );
       },
       signedOutBuilder: (context, authState) {
-        // TEMPORARY: Revert to simple return until we find the correct loading property
         return const _SignedOutGate();
       },
     );
+  }
+}
+
+/// Wrapper widget that checks admin status from database before routing
+class _AdminCheckWrapper extends StatefulWidget {
+  final String userId;
+  
+  const _AdminCheckWrapper({
+    required this.userId,
+  });
+
+  @override
+  State<_AdminCheckWrapper> createState() => _AdminCheckWrapperState();
+}
+
+class _AdminCheckWrapperState extends State<_AdminCheckWrapper> {
+  bool _isLoading = true;
+  bool _isAdmin = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAdminStatus();
+  }
+
+  Future<void> _checkAdminStatus() async {
+    try {
+      print('[DEBUG] Checking admin status for user: ${widget.userId}');
+      
+      // Query user_mapping table for admin status
+      final result = await supabase
+          .from('user_mapping')
+          .select('is_admin')
+          .eq('clerk_user_id', widget.userId)
+          .maybeSingle();
+      
+      if (result != null) {
+        final isAdmin = result['is_admin'] as bool? ?? false;
+        print('[DEBUG] Admin status retrieved: $isAdmin');
+        
+        if (mounted) {
+          setState(() {
+            _isAdmin = isAdmin;
+            _isLoading = false;
+          });
+        }
+      } else {
+        print('[DEBUG] User not found in user_mapping, defaulting to non-admin');
+        if (mounted) {
+          setState(() {
+            _isAdmin = false;
+            _isLoading = false;
+          });
+        }
+      }
+    } catch (e) {
+      print('[ERROR] Failed to check admin status: $e');
+      // On error, default to non-admin for security
+      if (mounted) {
+        setState(() {
+          _isAdmin = false;
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const _SplashScreen();
+    }
+
+    final Widget destination = _isAdmin ? const AdminDashboard() : const HomePage();
+    return _EnsureUserMapping(child: destination);
   }
 }
 
@@ -264,11 +350,19 @@ class _EnsureUserMappingState extends State<_EnsureUserMapping> {
       try {
         final user = ClerkAuth.of(context).user;
         if (user == null) break;
+        
+        // Get user email for easy identification in dashboard
+        final email = user.emailAddresses?.isNotEmpty == true
+            ? user.emailAddresses!.first.emailAddress
+            : null;
+        
         final result = await supabase
             .from('user_mapping')
             .upsert({
               'clerk_user_id': user.id,
               'supabase_user_id': user.id,
+              'email': email, // Store email for easy identification
+              'is_admin': false, // Default new users to non-admin
             })
             .select()
             .maybeSingle();
@@ -2027,7 +2121,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
   String? _sharedCaption;
+  String? _currentFolderFilter; // "all" or specific folder id
   final _sharedDataManager = SharedDataManager();
+  bool _hasCheckedPendingShare = false; // Prevents duplicate checks
   int _foldersLoadAttempts = 0;
 
   // Search State
@@ -2067,13 +2163,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     super.initState();
     _refreshFolders();
     WidgetsBinding.instance.addObserver(this);
-    
-    // Check for pending share AFTER frame builds
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-       _checkForPendingShare();
-    });
-    
     _searchController.addListener(_onSearchChanged);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    
+    // Check for pending share AFTER authentication is ready
+    // Longer delay ensures SharedPreferences read completes
+    if (!_hasCheckedPendingShare) {
+      _hasCheckedPendingShare = true;
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          _checkForPendingShare();
+        }
+      });
+    }
   }
 
   @override
@@ -2307,7 +2413,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                        orElse: () => {},
                                      );
                                      if (folder.isNotEmpty) {
-                                        await _saveLinkToFolder(folder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                                        await _saveLinkToFolder(folder['id'], url, overrideTitle: caption);
                                      }
                                    } else {
                                      final mappedUserId = await _getMappedUserId();
@@ -2318,7 +2424,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                            .insert({'name': suggestion.name, 'user_id': mappedUserId})
                                            .select()
                                            .single();
-                                          await _saveLinkToFolder(newFolder['id'], _sharedUrl!, overrideTitle: _sharedCaption);
+                                          await _saveLinkToFolder(newFolder['id'], url, overrideTitle: caption);
                                        } catch (e) {
                                           print('Error auto-creating suggestion: $e');
                                           return;
@@ -2330,7 +2436,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                    _sharedCaption = null;
                                    _isFromShare = false;
                                    try { const MethodChannel('share_receiver').invokeMethod('clearSharedText'); } catch (_) {}
-                                   _closeApp();
+                                   SystemNavigator.pop();
                                },
                             );
                          }).toList(),
@@ -2407,7 +2513,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                               } catch (_) {}
                               
                               // Redirect to source app
-                              _closeApp();
+                              SystemNavigator.pop();
                             },
                           );
                         }).toList(),
@@ -2551,24 +2657,38 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   child: const Text('ADD'),
                   onPressed: () async {
                     final folderName = _textFieldController.text.trim();
+                    
+                    // Validate folder name
+                    final validationError = Validators.validateFolderName(folderName);
+                    if (validationError != null) {
+                      ErrorHandler.showWarning(context, validationError);
+                      return;
+                    }
+                    
                     final mappedUserId = await _getMappedUserId();
+                    if (mappedUserId == null) {
+                      ErrorHandler.handleError(context, null, customMessage: 'User not logged in');
+                      return;
+                    }
 
-                    if (folderName.isNotEmpty && mappedUserId != null) {
-                      try {
-                        print('Creating folder: $folderName for user: $mappedUserId with icon: $selectedIconKey');
-                        await supabase
-                            .from('folders')
-                            .insert({
-                              'name': folderName, 
-                              'user_id': mappedUserId,
-                              'icon_key': selectedIconKey, // Save icon key
-                            });
-                        print('Folder created successfully');
-                        Navigator.pop(context);
-                        _refreshFolders();
-                      } catch (e) {
-                        print('Error adding folder: $e');
-                      }
+                    try {
+                      AppLogger.info('Creating folder: $folderName', 'Folder');
+                      await supabase
+                          .from('folders')
+                          .insert({
+                            'name': folderName, 
+                            'user_id': mappedUserId,
+                            'icon_key': selectedIconKey,
+                          });
+                      
+                      if (!context.mounted) return;
+                      Navigator.pop(context);
+                      ErrorHandler.showSuccess(context, 'Folder "$folderName" created');
+                      _refreshFolders();
+                    } catch (e) {
+                      AppLogger.error('Failed to create folder', error: e, tag: 'Folder');
+                      if (!context.mounted) return;
+                      ErrorHandler.handleError(context, e, customMessage: 'Failed to create folder');
                     }
                   },
                 ),
@@ -2629,24 +2749,31 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   onPressed: () async {
                     final folderName = _textFieldController.text.trim();
                     
-                    if (folderName.isNotEmpty) {
-                      try {
-                        await supabase
-                            .from('folders')
-                            .update({
-                              'name': folderName, 
-                              'icon_key': selectedIconKey,
-                            })
-                            .eq('id', folder['id']); 
-                        
-                        Navigator.pop(context);
-                        _refreshFolders();
-                      } catch (e) {
-                        print('Error updating folder: $e');
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Error updating folder: $e')),
-                        );
-                      }
+                    // Validate folder name
+                    final validationError = Validators.validateFolderName(folderName);
+                    if (validationError != null) {
+                      ErrorHandler.showWarning(context, validationError);
+                      return;
+                    }
+                    
+                    try {
+                      AppLogger.info('Updating folder: ${folder['id']}', 'Folder');
+                      await supabase
+                          .from('folders')
+                          .update({
+                            'name': folderName, 
+                            'icon_key': selectedIconKey,
+                          })
+                          .eq('id', folder['id']); 
+                      
+                      if (!context.mounted) return;
+                      Navigator.pop(context);
+                      ErrorHandler.showSuccess(context, 'Folder updated');
+                      _refreshFolders();
+                    } catch (e) {
+                      AppLogger.error('Failed to update folder', error: e, tag: 'Folder');
+                      if (!context.mounted) return;
+                      ErrorHandler.handleError(context, e, customMessage: 'Failed to update folder');
                     }
                   },
                 ),
@@ -2887,7 +3014,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     try {
                       const MethodChannel('share_receiver').invokeMethod('clearSharedText');
                     } catch (_) {}
-                    _closeApp();
+                    SystemNavigator.pop();
                   } catch (e) {
                     print('Error creating folder and saving link: $e');
                   }
